@@ -10,7 +10,7 @@ machine-readable report and isolates mismatched records.
    argparse, time, tracemalloc). `pytest` is the only dev dependency. No pandas, no ORMs.
 2. **3-tier data architecture (medallion) in one SQLite DB.** Every row carries `run_id`.
    - BRONZE = raw landed lines: `run`, `raw_record`
-   - SILVER = validated / normalized / deduped: `clean_record`, `quarantine`
+   - SILVER = validated / normalized / deduped: `clean_record`, `ref_customer`, `quarantine`
    - GOLD = reconciliation results: `key_result`, `field_diff`, `aggregate_result`, `check_result`
 3. **3-tier code architecture:** presentation (`recon/presentation`: CLI, report writers) ->
    service (`recon/service`: orchestration and business rules) -> data access
