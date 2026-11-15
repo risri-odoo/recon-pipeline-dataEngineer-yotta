@@ -2,6 +2,7 @@
 
 import json
 import shutil
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from recon.service.metrics import utc_iso
 from recon.service.normalize import format_minor
 from recon.service.pipeline import RunRequest, run_pipeline
 from tests.gold_helpers import gold_snapshot
+from tests.silver_helpers import REF_HEADER, SRC_HEADER, TGT_HEADER, order_row
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE = ROOT / "data" / "sample"
@@ -227,6 +229,92 @@ def test_injected_failure_rolls_back_everything_then_retry_succeeds(request_, mo
     assert counts(request_, retry.run_id)["key_result"] == EXPECTED["total_keys"]
 
 
+INVARIANTS = ("SRC_ROW_ACCOUNTING", "TGT_ROW_ACCOUNTING", "KEY_UNIQUENESS", "REFERENTIAL_INTEGRITY",
+              "KEY_COVERAGE", "AGGREGATE_EXPLAINED")
+
+
+def _simulate_engine_bug(m: pytest.MonkeyPatch, check: str) -> None:
+    """Make one repository count lie so that only `check` fails (DESIGN 4.7). KEY_UNIQUENESS cannot be
+    broken through the DB (primary keys forbid it), so every bug is simulated at the repository boundary."""
+    if check in ("SRC_ROW_ACCOUNTING", "TGT_ROW_ACCOUNTING"):
+        side, real = ("SOURCE" if check.startswith("SRC") else "TARGET"), silver_repo.count_clean_records
+        m.setattr(silver_repo, "count_clean_records", lambda c, r, s: real(c, r, s) - (s == side))
+    elif check == "KEY_UNIQUENESS":
+        m.setattr(gold_repo, "count_duplicate_keys", lambda c, r: (1, 0))
+    elif check == "REFERENTIAL_INTEGRITY":
+        m.setattr(gold_repo, "count_unknown_references", lambda c, r, columns: 1)
+    elif check == "KEY_COVERAGE":
+        real = gold_repo.key_coverage
+        m.setattr(gold_repo, "key_coverage", lambda c, r: real(c, r) | {"missing": 1})
+    else:
+        m.setattr(gold_repo, "count_unexplained_aggregates", lambda c, r: 1)
+
+
+@pytest.mark.parametrize("check", INVARIANTS)
+def test_invariant_violation_fails_the_run_then_retry_succeeds(request_, monkeypatch, check):
+    with monkeypatch.context() as m:
+        _simulate_engine_bug(m, check)
+        failed = run_pipeline(request_)
+
+    assert (failed.status, failed.exit_code, failed.recon_status) == ("FAILED", 2, None)
+    row = run_row(request_, failed.run_id)
+    assert (row["status"], row["exit_code"]) == ("FAILED", 2)
+    assert row["failure_reason"] == f"INVARIANT_VIOLATION:{check}"
+    assert isinstance(json.loads(row["failure_detail"]), dict)  # the counts, as JSON
+    assert counts(request_, failed.run_id) == {t: (1 if t == "run" else 0) for t in TABLES}  # full rollback
+
+    retry = run_pipeline(request_)  # the bug is gone: same run_key, next attempt
+    assert (retry.status, retry.attempt, retry.run_key) == ("SUCCEEDED", 2, failed.run_key)
+
+
+def test_input_changed_mid_run_fails_then_the_new_bytes_are_a_new_run_key(request_, monkeypatch):
+    real_check_inputs = pipeline.ingest.check_inputs
+
+    def check_then_append(paths, config):  # the file changes after hashing, before landing
+        checks = real_check_inputs(paths, config)
+        data = request_.target.read_bytes()
+        request_.target.write_bytes(data + data.splitlines(keepends=True)[-1])
+        return checks
+
+    with monkeypatch.context() as m:
+        m.setattr(pipeline.ingest, "check_inputs", check_then_append)
+        failed = run_pipeline(request_)
+
+    assert (failed.status, failed.exit_code, failed.failure_reason) == ("FAILED", 2, "INPUT_CHANGED")
+    row = run_row(request_, failed.run_id)
+    assert (row["status"], row["failure_reason"]) == ("FAILED", "INPUT_CHANGED")
+    detail = json.loads(row["failure_detail"])
+    assert detail["side"] == "TARGET" and detail["expected_sha256"] == row["target_sha256"]
+    assert detail["actual_sha256"] != detail["expected_sha256"]
+    assert counts(request_, failed.run_id) == {t: (1 if t == "run" else 0) for t in TABLES}
+
+    rerun = run_pipeline(request_)  # the changed file hashes differently: a new run_key, attempt 1
+    assert rerun.run_key != failed.run_key
+    assert (rerun.status, rerun.attempt) == ("SUCCEEDED", 1)
+
+
+def test_skipped_reuses_the_latest_succeeded_attempt(request_, monkeypatch):
+    first = run_pipeline(request_)                                 # a1 SUCCEEDED
+    monkeypatch.setenv(pipeline.FAIL_AT_ENV, "after_silver")
+    failed = run_pipeline(replace(request_, force=True))           # a2 FAILED
+    monkeypatch.delenv(pipeline.FAIL_AT_ENV)
+    assert (failed.status, failed.attempt) == ("FAILED", 2)
+
+    skipped = run_pipeline(request_)                               # a3 SKIPPED: a later FAILED attempt is ignored
+    assert (skipped.status, skipped.attempt, skipped.skipped_of_run_id) == ("SKIPPED", 3, first.run_id)
+
+    forced = run_pipeline(replace(request_, force=True))           # a4 SUCCEEDED
+    again = run_pipeline(request_)                                 # a5 SKIPPED, reusing a4 (the latest)
+    assert (again.status, again.attempt, again.skipped_of_run_id) == ("SKIPPED", 5, forced.run_id)
+
+
+def test_stale_after_minutes_is_not_part_of_the_run_key(request_):
+    first = run_pipeline(request_)
+    second = run_pipeline(replace(request_, stale_after_minutes=5))
+    assert second.run_key == first.run_key
+    assert (second.status, second.skipped_of_run_id) == ("SKIPPED", first.run_id)
+
+
 def test_unknown_fail_point_is_an_error_before_any_row(request_, monkeypatch):
     monkeypatch.setenv(pipeline.FAIL_AT_ENV, "after_everything")
     with pytest.raises(ValueError, match="RECON_FAIL_AT"):
@@ -314,6 +402,159 @@ def test_stale_and_fresh_running_abandons_stale_then_reports_in_progress(request
 
 
 # --------------------------------------------------------------------------- CLI
+
+
+# --------------------------------------------------------------------------- step 9: QA-pass edge cases (P1-P16)
+
+
+def _write_inputs(request_: RunRequest, source, target, reference=("C1,Alice",)) -> None:
+    for path, header, lines in ((request_.source, SRC_HEADER, source), (request_.target, TGT_HEADER, target),
+                                (request_.reference, REF_HEADER, reference)):
+        path.write_bytes(("\n".join([header, *lines]) + "\n").encode("utf-8"))
+
+
+def _key_statuses(request_: RunRequest, run_id: str) -> dict[str, str]:
+    conn = db(request_)
+    try:
+        return {k["order_id"]: k["key_status"] for k in gold_repo.fetch_key_results(conn, run_id)}
+    finally:
+        conn.close()
+
+
+def test_amount_above_max_is_a_row_reject_and_the_run_succeeds(request_):
+    _write_inputs(request_, source=[order_row("O1", amount="99999999999999999.99"),
+                                    order_row("O2", amount="9999999999.99"), order_row("O3", amount="10000000000.00")],
+                  target=[order_row("O1"), order_row("O2", amount="9999999999.99"), order_row("O3")])
+
+    outcome = run_pipeline(request_)
+
+    assert (outcome.status, outcome.recon_status, outcome.exit_code) == ("SUCCEEDED", "FAIL", 1)
+    conn = db(request_)
+    try:
+        q = silver_repo.fetch_quarantine(conn, outcome.run_id, "SOURCE")
+    finally:
+        conn.close()
+    assert [(r["order_id"], r["reason_code"], r["field_name"]) for r in q] == [
+        ("O1", "OUT_OF_RANGE", "amount"), ("O3", "OUT_OF_RANGE", "amount")]
+    assert "above maximum 9999999999.99" in q[0]["detail"]
+    assert _key_statuses(request_, outcome.run_id) == {"O1": "SOURCE_REJECTED", "O2": "MATCHED", "O3": "SOURCE_REJECTED"}
+
+
+@pytest.mark.parametrize("step", ["aggregates", "checks"])
+def test_aggregate_overflow_fails_the_run(request_, monkeypatch, step):
+    from recon.service import config as config_module
+    if step == "aggregates":
+        # Lift the money limit and the configured max so that two values fit int64 but their SUM does not.
+        monkeypatch.setattr(config_module, "MONEY_LIMIT_MINOR", config_module.INT64_MAX)
+        raw = json.loads(request_.config_path.read_text(encoding="utf-8"))
+        for f in raw["fields"]:
+            f.pop("max", None)
+        request_.config_path.write_text(json.dumps(raw), encoding="utf-8")
+        big = "50000000000000000.00"  # 5 * 10**18 minor units
+        _write_inputs(request_, source=[order_row("O1", amount=big), order_row("O2", amount=big)],
+                      target=[order_row("O1", amount=big)])
+    else:  # the AGGREGATE_EXPLAINED breakdown sums the values a second time
+        def overflow(*_args):
+            raise sqlite3.OperationalError("integer overflow")
+        monkeypatch.setattr(gold_repo, "aggregate_breakdown", overflow)
+
+    failed = run_pipeline(request_)
+
+    assert (failed.status, failed.exit_code, failed.failure_reason) == ("FAILED", 2, "AGGREGATE_OVERFLOW")
+    row = run_row(request_, failed.run_id)
+    assert (row["status"], row["failure_reason"], row["recon_status"]) == ("FAILED", "AGGREGATE_OVERFLOW", None)
+    assert json.loads(row["failure_detail"]) == {"error": "integer overflow", "step": step}
+    assert counts(request_, failed.run_id) == {t: (1 if t == "run" else 0) for t in TABLES}
+
+
+def test_header_only_reference_rejects_every_order(request_):
+    _write_inputs(request_, source=[order_row("O1")], target=[order_row("O1")], reference=())
+
+    outcome = run_pipeline(request_)
+
+    assert (outcome.status, outcome.recon_status, outcome.exit_code) == ("SUCCEEDED", "FAIL", 1)
+    conn = db(request_)
+    try:
+        [key] = gold_repo.fetch_key_results(conn, outcome.run_id)
+        checks = {c["check_name"]: c for c in gold_repo.fetch_check_results(conn, outcome.run_id)}
+        reasons = {(q["side"], q["reason_code"]) for q in silver_repo.fetch_quarantine(conn, outcome.run_id)}
+    finally:
+        conn.close()
+    assert (key["key_status"], key["note"]) == ("SOURCE_REJECTED", "rejected on both sides")
+    assert reasons == {("SOURCE", "INVALID_REFERENCE"), ("TARGET", "INVALID_REFERENCE")}
+    assert checks["EMPTY_BATCH"]["status"] == "WARN"
+    assert json.loads(checks["EMPTY_BATCH"]["detail"]) == [{"columns": [], "side": "REFERENCE"}]
+
+
+def test_zero_byte_reference_is_rejected(request_):
+    request_.reference.write_bytes(b"")
+    outcome = run_pipeline(request_)
+    assert (outcome.status, outcome.exit_code, outcome.failure_reason) == ("REJECTED", 2, "EMPTY_FILE")
+    assert [(d["side"], d["code"]) for d in json.loads(outcome.failure_detail)] == [("REFERENCE", "EMPTY_FILE")]
+
+
+def test_same_file_as_source_and_target(request_):
+    # Shipped config: the target map expects warehouse column names, so the source file fails as TARGET.
+    rejected = run_pipeline(replace(request_, target=request_.source))
+    assert (rejected.status, rejected.failure_reason) == ("REJECTED", "SCHEMA_MISSING_COLUMN")
+    assert [(d["side"], d["code"]) for d in json.loads(rejected.failure_detail)] == [("TARGET", "SCHEMA_MISSING_COLUMN")]
+
+    # Identity mapping: the file reconciles against itself.
+    raw = json.loads(request_.config_path.read_text(encoding="utf-8"))
+    raw["columns"]["target"] = dict(raw["columns"]["source"])
+    identity = request_.config_path.with_name("identity.json")
+    identity.write_text(json.dumps(raw), encoding="utf-8")
+    _write_inputs(request_, source=[order_row("O1"), order_row("O2", amount="20.00")], target=[])
+    outcome = run_pipeline(replace(request_, target=request_.source, config_path=identity))
+    assert (outcome.status, outcome.recon_status, outcome.exit_code) == ("SUCCEEDED", "PASS", 0)
+    assert _key_statuses(request_, outcome.run_id) == {"O1": "MATCHED", "O2": "MATCHED"}
+    row = run_row(request_, outcome.run_id)
+    assert row["source_sha256"] == row["target_sha256"]
+
+
+@pytest.mark.parametrize("started_at, expected", [
+    ("2026-11-15T12:00:00Z", "in progress"),   # same second as now: not older than 0 minutes
+    ("2026-11-15T11:59:59Z", "abandoned"),     # one second older: stale
+])
+def test_stale_after_zero_minutes_boundary(request_, monkeypatch, started_at, expected):
+    from datetime import datetime, timezone
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(pipeline, "datetime", FrozenDatetime)
+    running_id = _insert_running(request_, started_at)
+    zero = replace(request_, stale_after_minutes=0)
+
+    if expected == "in progress":
+        with pytest.raises(pipeline.RunInProgress) as info:
+            run_pipeline(zero)
+        assert info.value.run_id == running_id
+        assert run_row(request_, running_id)["status"] == "RUNNING"
+    else:
+        outcome = run_pipeline(zero)
+        assert (outcome.status, outcome.attempt, outcome.abandoned_run_ids) == ("SUCCEEDED", 2, [running_id])
+        assert run_row(request_, running_id)["status"] == "ABANDONED"
+
+
+def test_locked_database_exits_2_and_writes_no_run_row(request_, monkeypatch, capsys):
+    from recon.repository import db as db_module
+    monkeypatch.setattr(db_module, "BUSY_TIMEOUT_MS", 50)  # do not wait the default 5 s
+    request_.db_path.parent.mkdir(parents=True, exist_ok=True)
+    blocker = connect(request_.db_path)
+    try:
+        create_schema(blocker)
+        with transaction(blocker):  # another process holds the write lock for the whole invocation
+            assert main(cli_args(request_)) == 2
+    finally:
+        blocker.close()
+    assert "database is locked" in capsys.readouterr().err
+    assert counts(request_)["run"] == 0  # blocked at admission: no run row, nothing half-written
+
+    outcome = run_pipeline(request_)  # once the lock is gone, the same inputs run normally
+    assert (outcome.status, outcome.attempt) == ("SUCCEEDED", 1)
 
 
 def cli_args(request_: RunRequest, *extra: str) -> list[str]:

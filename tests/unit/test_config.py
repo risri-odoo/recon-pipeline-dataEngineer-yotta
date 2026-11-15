@@ -131,3 +131,37 @@ def test_config_validation_errors(raw_config, mutate, message):
     mutate(raw_config)
     with pytest.raises(ConfigError, match=re.escape(message)):
         parse_config(raw_config)
+
+
+# --------------------------------------------------------------------------- money max (DESIGN 7.2, P1)
+
+
+def test_money_max_is_parsed_and_defaults_to_none(raw_config, config):
+    assert (config.field("amount").max_minor, config.field("discount").max_minor) == (999999999999, 999999999999)
+    del field(raw_config, "amount")["max"]
+    parsed = parse_config(raw_config)
+    assert parsed.field("amount").max_minor is None
+    assert '"max":null' in parsed.config_json  # the default is part of the hashed canonical config
+
+
+@pytest.mark.parametrize("value, message", [
+    (9999999999.99, "decimal string"),
+    ("abc", "is not a decimal"),
+    ("1.001", "more than 2 decimal places"),
+    ("-1", "max '-1' must be >= min '0'"),
+    ("92233720368.55", "outside the supported money range"),  # MONEY_LIMIT_MINOR + 1 minor unit
+])
+def test_money_max_config_errors(raw_config, value, message):
+    field(raw_config, "amount")["max"] = value
+    with pytest.raises(ConfigError, match=re.escape(message) if "'" in message else message):
+        parse_config(raw_config)
+
+
+def test_money_max_at_the_limit_and_min_below_it(raw_config):
+    from recon.service.config import MONEY_LIMIT_MINOR
+    assert MONEY_LIMIT_MINOR == (2**63 - 1) // 1_000_000 == 9223372036854
+    field(raw_config, "amount")["max"] = "92233720368.54"
+    assert parse_config(raw_config).field("amount").max_minor == MONEY_LIMIT_MINOR
+    field(raw_config, "amount")["min"] = "-92233720368.55"
+    with pytest.raises(ConfigError, match="min '-92233720368.55' is outside the supported money range"):
+        parse_config(raw_config)

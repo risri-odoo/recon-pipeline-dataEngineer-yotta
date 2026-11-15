@@ -14,19 +14,26 @@ from typing import Any
 FIELD_TYPES = ("str", "enum", "decimal", "timestamp")
 SIDES = ("source", "target")
 
+# Money limit (DESIGN 7.2): a decimal value, in minor units, may not exceed MONEY_LIMIT_MINOR in absolute
+# value, so that a SUM over at least MONEY_SUM_HEADROOM_ROWS such values still fits SQLite's signed 64-bit
+# INTEGER. Configured min/max must lie inside it; when no max (min) is configured, it is the bound itself.
+INT64_MAX = 2**63 - 1
+MONEY_SUM_HEADROOM_ROWS = 1_000_000
+MONEY_LIMIT_MINOR = INT64_MAX // MONEY_SUM_HEADROOM_ROWS  # 9_223_372_036_854 (92233720368.54 at scale 2)
+
 _SNAKE = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
 _TOP_KEYS = {"dataset", "fields", "business_key", "version_field", "compare_fields",
              "columns", "reference", "aggregates"}
 _TYPE_KEYS = {
     "str": {"upper", "pattern", "reference"},
     "enum": {"values"},
-    "decimal": {"scale", "min", "tolerance"},
+    "decimal": {"scale", "min", "max", "tolerance"},
     "timestamp": set(),
 }
 _TYPE_DEFAULTS: dict[str, dict[str, Any]] = {
     "str": {"upper": False, "pattern": None, "reference": False},
     "enum": {},
-    "decimal": {"scale": 2, "min": None, "tolerance": "0"},
+    "decimal": {"scale": 2, "min": None, "max": None, "tolerance": "0"},
     "timestamp": {},
 }
 
@@ -46,6 +53,7 @@ class FieldSpec:
     values: tuple[str, ...] = ()
     scale: int = 0
     min_minor: int | None = None
+    max_minor: int | None = None
     tolerance_minor: int = 0
 
 
@@ -226,10 +234,18 @@ def _parse_field(raw: Any, index: int, canonical: dict[str, Any]) -> FieldSpec:
         if not isinstance(scale, int) or isinstance(scale, bool) or not 0 <= scale <= 9:
             raise ConfigError(f"{where}: scale must be an integer 0..9")
         min_minor = None if canonical["min"] is None else _decimal_minor(canonical["min"], scale, f"{where}.min")
+        max_minor = None if canonical["max"] is None else _decimal_minor(canonical["max"], scale, f"{where}.max")
+        for key, bound in (("min", min_minor), ("max", max_minor)):
+            if bound is not None and abs(bound) > MONEY_LIMIT_MINOR:
+                raise ConfigError(f"{where}: {key} {canonical[key]!r} is outside the supported money range "
+                                  f"+/-{MONEY_LIMIT_MINOR} minor units (int64 with headroom for summing)")
+        if min_minor is not None and max_minor is not None and max_minor < min_minor:
+            raise ConfigError(f"{where}: max {canonical['max']!r} must be >= min {canonical['min']!r}")
         tolerance = _decimal_minor(canonical["tolerance"], scale, f"{where}.tolerance")
         if tolerance < 0:
             raise ConfigError(f"{where}: tolerance must be >= 0")
-        return FieldSpec(name, ftype, required, scale=scale, min_minor=min_minor, tolerance_minor=tolerance)
+        return FieldSpec(name, ftype, required, scale=scale, min_minor=min_minor, max_minor=max_minor,
+                         tolerance_minor=tolerance)
     return FieldSpec(name, ftype, required)
 
 

@@ -158,6 +158,41 @@ def test_same_pair_twice_in_one_manifest_is_skipped_the_second_time(work):
     assert b.run_id == a.run_id
 
 
+def test_line_blocked_by_a_fresh_running_attempt_is_in_progress(work):
+    from recon.repository.db import transaction
+    from recon.repository.schema import create_schema
+    from recon.service.metrics import utc_iso
+    from recon.service.pipeline import RunRequest
+
+    probe = pipeline.run_pipeline(RunRequest(  # learn the pair's run_key in a throwaway DB
+        source=work / "pass" / "source.csv", target=work / "pass" / "target.csv",
+        reference=work / "pass" / "customers.csv", config_path=CONFIG,
+        db_path=work / "probe" / "recon.db", out_dir=work / "probe"))
+    running_id = probe.run_key[:16] + "-a1"
+    (work / "out").mkdir()
+    conn = connect(work / "out" / "recon.db")
+    try:
+        create_schema(conn)
+        with transaction(conn):  # a RUNNING attempt left by another process that is still working
+            run_repo.create_run(conn, run_id=running_id, run_key=probe.run_key, attempt=1, status="RUNNING",
+                                source_file="s", target_file="t", reference_file="r", config_sha256="c",
+                                started_at=utc_iso())
+    finally:
+        conn.close()
+
+    result = run_backfill(request(work, manifest(work, pair("pass", "a"), pair("fail", "b"))))
+
+    a, b = result.lines
+    assert (a.status, a.exit_code, a.run_id) == ("IN_PROGRESS", 2, running_id)
+    assert (b.status, b.exit_code) == ("SUCCEEDED", 1)  # the blocked line does not stop the others
+    assert result.exit_code == 2
+    conn = connect(work / "out" / "recon.db")
+    try:
+        assert [r["run_id"] for r in run_repo.find_by_run_key(conn, probe.run_key)] == [running_id]  # no new row
+    finally:
+        conn.close()
+
+
 def test_relative_paths_resolve_against_the_manifest_directory(work, monkeypatch):
     nested = work / "manifests"
     nested.mkdir()

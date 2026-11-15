@@ -8,9 +8,9 @@
     {"name": "order_ts", "type": "timestamp", "required": true},
     {"name": "status", "type": "enum", "required": true,
      "values": ["PLACED", "SHIPPED", "DELIVERED", "CANCELLED", "RETURNED"]},
-    {"name": "amount", "type": "decimal", "required": true, "scale": 2, "min": "0", "tolerance": "0.01"},
+    {"name": "amount", "type": "decimal", "required": true, "scale": 2, "min": "0", "max": "9999999999.99", "tolerance": "0.01"},
     {"name": "currency", "type": "str", "required": true, "upper": true, "pattern": "^[A-Z]{3}$"},
-    {"name": "discount", "type": "decimal", "required": false, "scale": 2, "min": "0", "tolerance": "0.01"},
+    {"name": "discount", "type": "decimal", "required": false, "scale": 2, "min": "0", "max": "9999999999.99", "tolerance": "0.01"},
     {"name": "updated_at", "type": "timestamp", "required": true}
   ],
   "compare_fields": ["customer_id", "order_ts", "status", "amount", "currency", "discount"],

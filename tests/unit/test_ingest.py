@@ -234,6 +234,35 @@ def test_crlf_line_endings_are_not_in_raw_text(tmp_path, config, conn):
         (1, SRC_HEADER), (2, SRC_ROW), (3, SRC_ROW.replace("O1", "O2"))]
 
 
+def test_crlf_with_interior_and_trailing_blank_lines(tmp_path, config, conn):
+    row2 = SRC_ROW.replace("O1", "O2")
+    src = f"{SRC_HEADER}\r\n{SRC_ROW}\r\n\r\n{row2}\r\n\r\n  \r\n\r\n"
+    result = run_ingest(conn, inputs(tmp_path, source=src), config)
+    rows = bronze_repo.fetch_raw_records(conn, RUN_ID, "SOURCE")
+    assert [(r["line_no"], r["record_type"], r["raw_text"]) for r in rows] == [
+        (1, "HEADER", SRC_HEADER), (2, "DATA", SRC_ROW), (4, "DATA", row2)]  # no \r, physical line numbers
+    assert (result.sides[ing.SOURCE].data_records, result.sides[ing.SOURCE].blank_lines) == (2, 4)
+    assert not result.warnings
+
+
+def test_mixed_line_endings_in_one_file(tmp_path, config, conn):
+    rows = [SRC_ROW.replace("O1", f"O{i}") for i in range(1, 4)]
+    src = f"{SRC_HEADER}\r\n{rows[0]}\n{rows[1]}\r{rows[2]}\r\n"  # CRLF, LF, lone CR, CRLF
+    result = run_ingest(conn, inputs(tmp_path, source=src), config)
+    rows_landed = bronze_repo.fetch_raw_records(conn, RUN_ID, "SOURCE")
+    assert [(r["line_no"], r["raw_text"]) for r in rows_landed] == [
+        (1, SRC_HEADER), (2, rows[0]), (3, rows[1]), (4, rows[2])]  # every terminator ends a physical line
+    assert result.sides[ing.SOURCE].data_records == 3
+
+
+def test_header_field_over_the_csv_size_limit_is_malformed_file(tmp_path, config):
+    import csv
+    check = check_source(tmp_path, config, f"{SRC_HEADER},{'x' * (csv.field_size_limit() + 1)}\n{SRC_ROW},1\n")
+    assert codes(check.rejects) == ["MALFORMED_FILE"]
+    assert check.rejects[0].detail == ("header record starting at line 1 is not parseable CSV: a field exceeds the "
+                                       f"CSV field size limit ({csv.field_size_limit()} characters)")
+
+
 def test_quoted_comma_stays_one_record(tmp_path, config, conn):
     ref = f'{REF_HEADER}\nC1,"Smith, Jane"\n'
     run_ingest(conn, inputs(tmp_path, reference=ref), config)

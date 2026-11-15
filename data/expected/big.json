@@ -1,0 +1,95 @@
+{
+  "bucket_sizes": {
+    "amount_mismatch": 500,
+    "cosmetic": 1000,
+    "extra_in_target": 300,
+    "missing_in_target": 500,
+    "null_both": 2000,
+    "null_one_side": 200,
+    "src_bad_type": 200,
+    "src_conflict": 100,
+    "src_exact_dup": 300,
+    "src_invalid_ref": 200,
+    "src_malformed": 100,
+    "src_missing_required": 200,
+    "src_out_of_order": 300,
+    "target_stale": 300,
+    "tgt_bad_type": 100,
+    "tgt_exact_dup": 100,
+    "within_tolerance": 500
+  },
+  "field_diff_counts": [
+    {
+      "count": 500,
+      "diff_type": "VALUE_MISMATCH",
+      "field_name": "amount"
+    },
+    {
+      "count": 200,
+      "diff_type": "NULL_MISMATCH",
+      "field_name": "discount"
+    },
+    {
+      "count": 300,
+      "diff_type": "TARGET_STALE",
+      "field_name": "status"
+    }
+  ],
+  "generator_version": 1,
+  "key_status_counts": {
+    "CONFLICT": 100,
+    "EXTRA_IN_TARGET": 400,
+    "MATCHED": 97600,
+    "MISMATCHED": 1000,
+    "MISSING_IN_TARGET": 500,
+    "SOURCE_REJECTED": 600,
+    "TARGET_REJECTED": 100
+  },
+  "n": 100000,
+  "recon_status": "FAIL",
+  "seed": 1,
+  "sides": {
+    "REFERENCE": {
+      "accepted": 2000,
+      "rows_read": 2000
+    },
+    "SOURCE": {
+      "accepted": 99200,
+      "conflicting_rows": 200,
+      "duplicate_exact": 300,
+      "rejected_by_reason": {
+        "BAD_ENUM": 0,
+        "BAD_FORMAT": 0,
+        "BAD_TYPE": 200,
+        "INVALID_REFERENCE": 200,
+        "MALFORMED_ROW": 100,
+        "MISSING_REQUIRED": 200,
+        "OUT_OF_RANGE": 0
+      },
+      "rows_read": 100700,
+      "sum_amount": "49652283.39",
+      "sum_discount": "2431810.24",
+      "superseded": 300
+    },
+    "TARGET": {
+      "accepted": 99700,
+      "conflicting_rows": 0,
+      "duplicate_exact": 100,
+      "rejected_by_reason": {
+        "BAD_ENUM": 0,
+        "BAD_FORMAT": 0,
+        "BAD_TYPE": 100,
+        "INVALID_REFERENCE": 0,
+        "MALFORMED_ROW": 0,
+        "MISSING_REQUIRED": 0,
+        "OUT_OF_RANGE": 0
+      },
+      "rows_read": 99900,
+      "sum_amount": "49910419.67",
+      "sum_discount": "2438978.27",
+      "superseded": 0
+    }
+  },
+  "total_keys": 100300,
+  "unattributable_rejects": 100
+}

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from recon.service import config as config_module
 from recon.service.config import Config, FieldSpec
 
 MISSING_REQUIRED = "MISSING_REQUIRED"
@@ -26,6 +27,8 @@ _TS = re.compile(
     r"(?:\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})?$"
 )
 _TS_LIKE = re.compile(r"^[0-9]{1,4}[-/.][0-9]{1,2}[-/.][0-9]{1,4}(?:[Tt ].*)?$")
+# DESIGN 7.1: upper-casing touches ASCII letters only; every other character is kept unchanged.
+_ASCII_UPPER = str.maketrans("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 _NUMBER_LIKE = re.compile(r"^[+-]?[0-9.,]*[0-9][0-9.,]*(?:[eE][+-]?[0-9]+)?$")
 
 
@@ -175,14 +178,19 @@ def format_minor(units: int, scale: int = 2) -> str:
 
 def _normalize_str(spec: FieldSpec, text: str) -> str:
     if spec.upper:
-        text = text.upper()
+        text = ascii_upper(text)
     if spec.pattern is not None and not spec.pattern.fullmatch(text):
         raise NormalizeError(BAD_FORMAT, f"{text!r} does not match {spec.pattern.pattern!r}")
     return text
 
 
+def ascii_upper(text: str) -> str:
+    """Upper-case a-z only, so non-ASCII text never changes length or collides ('straße' stays 'STRAßE')."""
+    return text.translate(_ASCII_UPPER)
+
+
 def _normalize_enum(spec: FieldSpec, text: str) -> str:
-    value = text.upper()
+    value = ascii_upper(text)  # DESIGN 7.1 #16: ASCII letters only, like str fields
     if value not in spec.values:
         raise NormalizeError(BAD_ENUM, f"{text!r} not in {'|'.join(spec.values)}")
     return value
@@ -190,8 +198,15 @@ def _normalize_enum(spec: FieldSpec, text: str) -> str:
 
 def _normalize_decimal(spec: FieldSpec, text: str) -> int:
     minor = parse_money(text, spec.scale)
+    limit = config_module.MONEY_LIMIT_MINOR  # read at call time
     if spec.min_minor is not None and minor < spec.min_minor:
         raise NormalizeError(OUT_OF_RANGE, f"{text!r} is below minimum {format_minor(spec.min_minor, spec.scale)}")
+    if spec.min_minor is None and minor < -limit:
+        raise NormalizeError(OUT_OF_RANGE, f"{text!r} is below the supported minimum {format_minor(-limit, spec.scale)}")
+    if spec.max_minor is not None and minor > spec.max_minor:
+        raise NormalizeError(OUT_OF_RANGE, f"{text!r} is above maximum {format_minor(spec.max_minor, spec.scale)}")
+    if spec.max_minor is None and minor > limit:
+        raise NormalizeError(OUT_OF_RANGE, f"{text!r} is above the supported maximum {format_minor(limit, spec.scale)}")
     return minor
 
 

@@ -36,7 +36,7 @@ from recon.repository import run_repo, silver_repo
 from recon.repository.db import connect, transaction
 from recon.repository.schema import create_schema
 from recon.service import compare, ingest
-from recon.service.compare import InvariantViolation
+from recon.service.compare import AggregateOverflow, InvariantViolation
 from recon.service.config import Config, load_config
 from recon.service.dedupe import (CONFLICTING_DUPLICATE, DUPLICATE_EXACT, SUPERSEDED, SideCounts, SideSilver,
                                   SilverResult, dedupe)
@@ -353,7 +353,7 @@ def _execute(conn: sqlite3.Connection, outcome: RunOutcome, paths: dict[str, str
             log_event("batch_reject", run_id=run_id, stage="bronze", level=logging.ERROR, side=issue.side,
                       code=issue.code, file=issue.file, detail=issue.detail)
         _fail(conn, outcome, REJECTED, exc.failure_reason, exc.failure_detail)
-    except (InvariantViolation, InputChangedError) as exc:
+    except (InvariantViolation, InputChangedError, AggregateOverflow) as exc:
         _fail(conn, outcome, FAILED, exc.failure_reason, exc.failure_detail)
     except Exception as exc:  # noqa: BLE001 - any other error is UNEXPECTED_ERROR; the data already rolled back
         _fail(conn, outcome, FAILED, UNEXPECTED_ERROR, f"{type(exc).__name__}: {exc}")

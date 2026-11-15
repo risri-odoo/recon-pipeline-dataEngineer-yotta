@@ -250,12 +250,20 @@ def ends_in_open_quote(text: str) -> bool:
     return state == quoted
 
 
-def _parses_strictly(raw_text: str) -> bool:
+def csv_error_detail(exc: csv.Error) -> str:
+    """Human-readable text for a csv.Error; the field size limit is named as such, not as a quoting error."""
+    if "field larger than field limit" in str(exc):
+        return f"a field exceeds the CSV field size limit ({csv.field_size_limit()} characters)"
+    return f"CSV quoting error: {exc}"
+
+
+def _strict_parse_error(raw_text: str) -> str | None:
+    """None if raw_text is exactly one strictly valid CSV record, else why not."""
     try:
         rows = list(csv.reader([raw_text], strict=True))
-    except csv.Error:
-        return False
-    return len(rows) == 1
+    except csv.Error as exc:
+        return csv_error_detail(exc)
+    return None if len(rows) == 1 else f"record parses as {len(rows)} rows"
 
 
 class _HashingReader(io.RawIOBase):
@@ -336,8 +344,10 @@ def check_file(path: str | Path, spec: SideSpec) -> FileCheck:
     if last is not None and ends_in_open_quote(last.raw_text):
         return reject(MALFORMED_FILE, f"unterminated quoted field: the record starting at line {last.line_no} "
                                       f"is still open at end of file")
-    if header.fields is None or not _parses_strictly(header.raw_text):
-        return reject(MALFORMED_FILE, f"header record starting at line {header.line_no} is not parseable CSV")
+    header_error = _strict_parse_error(header.raw_text)
+    if header.fields is None or header_error is not None:
+        reason = f": {header_error}" if header_error and "field size limit" in header_error else ""
+        return reject(MALFORMED_FILE, f"header record starting at line {header.line_no} is not parseable CSV{reason}")
 
     names = tuple(name.strip().lower() for name in header.fields)
     check.header_line_no = header.line_no

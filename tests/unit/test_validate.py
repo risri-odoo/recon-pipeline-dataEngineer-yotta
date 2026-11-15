@@ -150,3 +150,17 @@ def test_payload_hash_null_differs_from_zero(config):
 def test_header_constant_matches_shipped_sample():
     with open(ROOT / "data" / "sample" / "source.csv", encoding="utf-8") as fh:
         assert fh.readline().rstrip("\n") == SRC_HEADER
+
+
+def test_field_over_the_csv_size_limit_is_malformed_row_with_a_clear_detail(run_silver):
+    import csv
+    line = order_row(customer_id="C" + "x" * csv.field_size_limit())
+    conn, _ = run_silver(source=[line])
+    [q] = quarantine(conn)
+    assert (q["reason_code"], q["order_id"], q["raw_text"]) == ("MALFORMED_ROW", None, line)
+    assert q["detail"] == f"a field exceeds the CSV field size limit ({csv.field_size_limit()} characters)"
+
+
+def test_nul_byte_in_the_key_is_kept(run_silver):
+    conn, _ = run_silver(source=[order_row(order_id="O\x001")])
+    assert [r["order_id"] for r in clean(conn)] == ["O\x001"]

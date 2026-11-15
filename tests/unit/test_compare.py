@@ -246,6 +246,66 @@ def test_unattributable_reject_fails_recon_even_when_every_key_matches(run_gold)
     assert result.recon_status == "FAIL"
 
 
+def test_leading_zeros_make_different_keys(run_gold):
+    conn, result = run_gold(source=[order_row("0012"), order_row("007")], target=[order_row("12"), order_row(" 007 ")])
+    assert [(k["order_id"], k["key_status"]) for k in gold_repo.fetch_key_results(conn, RUN)] == [
+        ("0012", "MISSING_IN_TARGET"), ("007", "MATCHED"), ("12", "EXTRA_IN_TARGET")]  # never 0012 == 12
+    assert result.recon_status == "FAIL"
+
+
+def test_reference_rejects_alone_do_not_fail_recon(run_gold):
+    conn, result = run_gold(source=[order_row()], target=[order_row()],
+                            reference=("C1,Alice", ",Nobody", "C2,Bob,extra"))
+    ref_q = silver_repo.fetch_quarantine(conn, RUN, "REFERENCE")
+    assert [(q["line_no"], q["reason_code"]) for q in ref_q] == [(3, "MISSING_REQUIRED"), (4, "MALFORMED_ROW")]
+    assert result.unattributable_rejects == 0
+    assert result.recon_status == "PASS"  # DESIGN 4.8: only their effect on orders (INVALID_REFERENCE) counts
+
+
+def test_duplicate_dispositions_and_older_rejects_alone_do_not_fail_recon(run_gold):
+    conn, result = run_gold(source=[order_row(updated_at=T1),                 # SUPERSEDED
+                                    order_row(amount="abc", updated_at=T2),   # older reject, did not win
+                                    order_row(updated_at=T3),                 # winner
+                                    order_row(updated_at=T3)],                # DUPLICATE_EXACT
+                            target=[order_row(updated_at=T3)])
+    reasons = [q["reason_code"] for q in silver_repo.fetch_quarantine(conn, RUN, "SOURCE")]
+    assert reasons == ["SUPERSEDED", "BAD_TYPE", "DUPLICATE_EXACT"]
+    assert keys(conn)["O1"]["key_status"] == "MATCHED"
+    assert result.recon_status == "PASS"
+
+
+def test_keys_differing_only_by_case_or_outer_whitespace_match_across_sides(run_gold):
+    conn, result = run_gold(source=[order_row("o1"), order_row(" O2 ")], target=[order_row("O1"), order_row("o2")])
+    assert {k: v["key_status"] for k, v in keys(conn).items()} == {"O1": "MATCHED", "O2": "MATCHED"}
+    assert result.recon_status == "PASS"
+
+
+def test_non_ascii_keys_are_not_case_folded(run_gold):
+    conn, _ = run_gold(source=[order_row("straße")], target=[order_row("STRASSE")])
+    assert {k: v["key_status"] for k, v in keys(conn).items()} == {
+        "STRASSE": "EXTRA_IN_TARGET", "STRAßE": "MISSING_IN_TARGET"}  # two different keys (DESIGN 7.1)
+
+
+def test_nul_byte_in_a_key_is_a_different_key(run_gold):
+    conn, _ = run_gold(source=[order_row("O\x001")], target=[order_row("O1")])
+    assert {k: v["key_status"] for k, v in keys(conn).items()} == {
+        "O1": "EXTRA_IN_TARGET", "O\x001": "MISSING_IN_TARGET"}
+
+
+def test_currency_change_on_the_same_key(run_gold):
+    conn, result = run_gold(source=[order_row(currency="USD", amount="10.00", discount="")],
+                            target=[order_row(currency="EUR", amount="10.00", discount="")])
+    assert [(d["field_name"], d["source_value"], d["target_value"], d["diff_type"]) for d in diffs(conn)] == [
+        ("currency", "USD", "EUR", "VALUE_MISMATCH")]  # amount is equal in number, so it is not a diff
+    agg = aggregates(conn)
+    usd, eur = agg[("SUM_AMOUNT", "CURRENCY", "USD")], agg[("SUM_AMOUNT", "CURRENCY", "EUR")]
+    assert (usd["source_value"], usd["target_value"], usd["delta"], usd["explained_delta"]) == (1000, 0, 1000, 1000)
+    assert (eur["source_value"], eur["target_value"], eur["delta"], eur["explained_delta"]) == (0, 1000, -1000, -1000)
+    assert agg[("SUM_AMOUNT", "ALL", "*")]["delta"] == 0  # cross-currency ALL sum hides the move (DESIGN 7.1 #8)
+    assert all(a["unexplained_delta"] == 0 for a in agg.values())
+    assert result.recon_status == "FAIL"
+
+
 def test_aggregate_explained_breakdown_on_sample(config):
     import tempfile
     from pathlib import Path

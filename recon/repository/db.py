@@ -19,6 +19,11 @@ def connect(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def is_integer_overflow(exc: BaseException) -> bool:
+    """True for SQLite's 'integer overflow' (raised by SUM() when a 64-bit integer total overflows)."""
+    return isinstance(exc, sqlite3.OperationalError) and "integer overflow" in str(exc)
+
+
 @contextmanager
 def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     """BEGIN IMMEDIATE ... COMMIT; ROLLBACK and re-raise on any exception (including BaseException)."""

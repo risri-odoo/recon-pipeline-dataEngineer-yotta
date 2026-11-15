@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from recon.repository import bronze_repo, gold_repo, silver_repo
+from recon.repository.db import is_integer_overflow
 from recon.service.config import Config
 from recon.service.ingest import (EMPTY_BATCH, MISSING_OPTIONAL_COLUMN, SCHEMA_EXTRA_COLUMN, SIDE_ORDER,
                                   BatchIssue)
@@ -63,6 +64,21 @@ class InvariantViolation(RuntimeError):
     @property
     def failure_detail(self) -> str:
         return canonical_json(self.counts)
+
+
+class AggregateOverflow(RuntimeError):
+    """A money SUM no longer fits SQLite's 64-bit INTEGER (DESIGN 7.2): the run fails, nothing is guessed."""
+
+    failure_reason = "AGGREGATE_OVERFLOW"
+
+    def __init__(self, step: str, error: str):
+        super().__init__(f"aggregate overflow while computing {step}: {error}")
+        self.step = step
+        self.error = error
+
+    @property
+    def failure_detail(self) -> str:
+        return canonical_json({"error": self.error, "step": self.step})
 
 
 @dataclass(frozen=True)
@@ -138,9 +154,18 @@ def reconcile(conn: sqlite3.Connection, run_id: str, config: Config,
     gold_repo.insert_key_results(conn, run_id)
     gold_repo.insert_field_diffs(conn, run_id, compare_fields(config))
     gold_repo.apply_diff_counts(conn, run_id)
-    gold_repo.insert_aggregates(conn, run_id, measures(config), groupings(config))
-
-    checks = evaluate_checks(conn, run_id, config, list(warnings))
+    try:
+        gold_repo.insert_aggregates(conn, run_id, measures(config), groupings(config))
+    except Exception as exc:
+        if is_integer_overflow(exc):
+            raise AggregateOverflow("aggregates", str(exc)) from exc
+        raise
+    try:
+        checks = evaluate_checks(conn, run_id, config, list(warnings))
+    except Exception as exc:  # the AGGREGATE_EXPLAINED breakdown sums the same values again
+        if is_integer_overflow(exc):
+            raise AggregateOverflow("checks", str(exc)) from exc
+        raise
     for check in checks:
         if check.severity == INVARIANT and not check.passed:
             raise InvariantViolation(check.check_name, check.detail)

@@ -3,7 +3,9 @@
 Status: rev 3, all review questions resolved (2026-11-15). Every reason code, status and check name in
 section 4 comes from the reviewed catalogue. Do not rename or add any of them without sign-off.
 Approved additions since rev 3: batch reject `MALFORMED_FILE` (4.1) and FAILED reason `INPUT_CHANGED` (section 3, `run`), both 2026-11-15;
-column `run.config_json` and the `recon report` command (section 6.7), 2026-11-15.
+column `run.config_json` and the `recon report` command (section 6.7), 2026-11-15;
+money `max` with OUT_OF_RANGE above it (2.1, 4.3), FAILED reason `AGGREGATE_OVERFLOW` (section 3, `run`; 7.2),
+ASCII-only upper-casing of str fields and enums (7.1 #16) and the same-second CONFLICT limitation (7.2), 2026-11-15.
 
 ---
 
@@ -67,9 +69,9 @@ violation stops here) → **report**.
 | customer_id | str | yes | trim, upper-case | must exist in reference customers | yes | exact |
 | order_ts | timestamp | yes | → UTC `YYYY-MM-DDTHH:MM:SSZ` (fractional seconds truncated) | valid timestamp | yes | exact (to the second) |
 | status | enum | yes | trim, upper-case | one of PLACED, SHIPPED, DELIVERED, CANCELLED, RETURNED (case-insensitive) | yes | exact |
-| amount | decimal(scale 2) | yes | Decimal → integer minor units | ≥ 0 | yes | 0.01 inclusive (≤ 1 minor unit) |
+| amount | decimal(scale 2) | yes | Decimal → integer minor units | 0 ≤ amount ≤ 9999999999.99 (config `min` / `max`) | yes | 0.01 inclusive (≤ 1 minor unit) |
 | currency | str(3) | yes | trim, upper-case | exactly 3 letters A–Z | yes | exact |
-| discount | decimal(scale 2) | **no** (nullable) | Decimal → integer minor units; empty → NULL | ≥ 0 when present | yes | 0.01 inclusive |
+| discount | decimal(scale 2) | **no** (nullable) | Decimal → integer minor units; empty → NULL | 0 ≤ discount ≤ 9999999999.99 when present | yes | 0.01 inclusive |
 | updated_at | timestamp | yes | → UTC `YYYY-MM-DDTHH:MM:SSZ` (fractional seconds truncated) | version field: latest wins | **no**, version metadata only | — |
 
 Grain: one input row = one version of an order. SILVER keeps at most one row per `(run_id, side, order_id)`.
@@ -127,8 +129,8 @@ Conventions:
 | config_sha256 | TEXT NOT NULL | canonical config hash |
 | config_json | TEXT | the canonical config JSON that `config_sha256` hashes (section 5). Written on every RUNNING and SKIPPED row; `recon report` rebuilds the config from it and refuses it unless it hashes to `config_sha256` |
 | started_at / finished_at | TEXT | the only non-deterministic columns |
-| failure_reason | TEXT | REJECTED: the batch-reject code. FAILED: `INVARIANT_VIOLATION:<check>`, `INPUT_CHANGED` (a file's bytes changed between the batch-check pass and the landing pass) or `UNEXPECTED_ERROR`. ABANDONED: `STALE_RUNNING` |
-| failure_detail | TEXT | REJECTED: every batch reject as JSON `[{side, file, code, detail}]`. FAILED: invariant counts as JSON; for INPUT_CHANGED `{side, file, expected_sha256, actual_sha256}` (`MISSING` if the file vanished); otherwise the exception type and message |
+| failure_reason | TEXT | REJECTED: the batch-reject code. FAILED: `INVARIANT_VIOLATION:<check>`, `INPUT_CHANGED` (a file's bytes changed between the batch-check pass and the landing pass), `AGGREGATE_OVERFLOW` (a money SUM no longer fits a 64-bit integer, section 7.2) or `UNEXPECTED_ERROR`. ABANDONED: `STALE_RUNNING` |
+| failure_detail | TEXT | REJECTED: every batch reject as JSON `[{side, file, code, detail}]`. FAILED: invariant counts as JSON; for INPUT_CHANGED `{side, file, expected_sha256, actual_sha256}` (`MISSING` if the file vanished); for AGGREGATE_OVERFLOW `{error, step}` (step `aggregates` or `checks`); otherwise the exception type and message |
 
 **raw_record** (written by `bronze_repo`)
 
@@ -280,7 +282,7 @@ No extra table is used. Each warning is reported in two places:
 | BAD_TYPE | value is not interpretable as the type at all (e.g. `abc` as amount, `yesterday` as timestamp) |
 | BAD_FORMAT | value is recognizably the type but in a disallowed form: comma decimal / thousands separators (`1.234,56`, `1,234.56`), scale > 2, exponent, leading `+` or `.`, currency symbol, non-ISO date (`15/11/2026`), date-only timestamp, currency not `[A-Z]{3}` |
 | BAD_ENUM | status not in the enum after upper-casing |
-| OUT_OF_RANGE | amount < 0 or discount < 0 |
+| OUT_OF_RANGE | a money value below its configured `min` or above its configured `max` (orders: amount and discount outside 0 … 9999999999.99); without a configured bound, outside ±92233720368.54 (section 7.2). Never a run failure |
 | INVALID_REFERENCE | customer_id not in ref_customer |
 
 Validation order is fixed: MALFORMED_ROW first, then field by field in logical-schema order. Within a field, checks run MISSING_REQUIRED → BAD_TYPE/BAD_FORMAT → BAD_ENUM → OUT_OF_RANGE. INVALID_REFERENCE is checked last, only on rows that passed everything else.
@@ -379,7 +381,7 @@ stateDiagram-v2
     [*] --> RUNNING
     RUNNING --> SUCCEEDED: pipeline completed (recon PASS or FAIL)
     RUNNING --> REJECTED: any batch reject
-    RUNNING --> FAILED: invariant violation, input changed or unexpected error
+    RUNNING --> FAILED: invariant violation, input changed, aggregate overflow or unexpected error
     RUNNING --> ABANDONED: started_at older than --stale-after-minutes, found by a later invocation
 ```
 
@@ -464,12 +466,30 @@ stateDiagram-v2
     - They are counted per side in `metrics.json` as `blank_lines`.
     - `line_no` stays the physical line number, so it skips over blank lines.
     - Row accounting covers landed DATA records only.
+16. **Case normalization.** Upper-casing (str fields with `upper`, and the reference key) changes only the ASCII
+    letters a–z to A–Z. Every other character is kept unchanged, so `straße` becomes `STRAßE` and stays a
+    different key from `STRASSE` (Python's `str.upper()` would have merged them). Enum values are matched the
+    same way, so `ſhipped` (long s) is BAD_ENUM, not SHIPPED.
 
 ### 7.2 Known limitations
 
 1. All currencies are treated as 2 decimal places. Zero-decimal currencies (JPY) and 3-decimal currencies (KWD) are not supported.
 2. Currency codes are only checked for shape (`[A-Z]{3}`), not against ISO 4217.
-3. Timestamp comparison is at whole-second precision. Sub-second differences are invisible.
+3. Timestamp comparison is at whole-second precision. Sub-second differences are invisible. Two versions of
+   one key within the same second (`…:00.100` and `…:00.900`) tie after truncation: with different payloads
+   they become CONFLICTING_DUPLICATE and the key is CONFLICT. The newer version is flagged, never silently
+   picked or lost.
 4. There is no concurrency control beyond the RUNNING/stale rule; two processes started within the same instant on the same inputs are not guarded against (no PID or lock checks).
+   If the DB lock is lost mid-run (another process holds the write lock past `busy_timeout` during the data
+   stage), the data transaction rolls back and the FAILED update may not be writable either: the run row then
+   stays RUNNING and is cleaned up by the stale rule (ABANDONED, `STALE_RUNNING`) on a later invocation.
 5. There are no schema migrations. Tables are created with `CREATE TABLE IF NOT EXISTS`, so a DB created before a schema change (for example the `run.config_json` column) must be recreated; its runs can no longer be written to or reported.
-6. On Windows, publishing a report renames the run folder, which fails if another process holds a file in it open (for example a report file open in an editor that locks it). Nothing is lost: the previous folder is restored, the command exits 2, and `recon report --run-id` can be rerun once the file is closed.
+6. Money range and overflow. SQLite INTEGER is signed 64-bit (max 9223372036854775807).
+   - A money value may not exceed `MONEY_LIMIT_MINOR` = (2^63 − 1) // 1,000,000 = 9223372036854 minor units
+     (92233720368.54 at scale 2) in absolute value, so at least a million values at the limit can be summed.
+     A configured `min` / `max` must lie inside it; a value outside the bounds is an OUT_OF_RANGE row reject.
+   - With the orders max of 9999999999.99 (999999999999 minor units), one SUM overflows only beyond
+     9223372036854775807 / 999999999999 ≈ 9.22 million max-value rows on one side.
+   - If a SUM does overflow, SQLite raises `integer overflow`; the run becomes FAILED with
+     `AGGREGATE_OVERFLOW` (no partial data, exit 2). Totals are never guessed or switched to floating point.
+7. On Windows, publishing a report renames the run folder, which fails if another process holds a file in it open (for example a report file open in an editor that locks it). Nothing is lost: the previous folder is restored, the command exits 2, and `recon report --run-id` can be rerun once the file is closed.

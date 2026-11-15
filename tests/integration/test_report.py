@@ -294,6 +294,39 @@ def test_failed_and_rejected_runs_write_no_report(inputs, tmp_path, monkeypatch,
     assert code == 2 and "status FAILED" in err
 
 
+def test_report_command_refuses_a_skipped_run_id(sample_run, inputs, capsys):
+    out, run_id = sample_run
+    code, fields, _ = run_cli(run_args(inputs, out), capsys)
+    assert fields["status"] == "SKIPPED"
+    code, _, err = run_cli(report_cli(out, fields["skip_run_id"]), capsys)
+    assert code == 2 and "status SKIPPED" in err
+    assert not (out / fields["skip_run_id"]).exists()
+
+
+def test_batch_warnings_reach_report_json_and_never_change_status(tmp_path, capsys):
+    folder = tmp_path / "in"
+    folder.mkdir()
+    rows = [order_row("O1"), order_row("O2", amount="20.00")]
+    (folder / "source.csv").write_bytes(("\n".join([f"{SRC_HEADER},Note", *(r + ",x" for r in rows)]) + "\n").encode())
+    (folder / "target.csv").write_bytes(("\n".join([f"{TGT_HEADER},load_batch", *(r + ",7" for r in rows)]) + "\n")
+                                        .encode())
+    (folder / "customers.csv").write_bytes(b"customer_id\nC1\n")  # customer_name is optional
+    out = tmp_path / "out"
+
+    code, fields, _ = run_cli(run_args(folder, out), capsys)
+
+    assert (code, fields["status"], fields["recon_status"]) == (0, "SUCCEEDED", "PASS")
+    doc = json.loads((out / fields["run_id"] / REPORT_JSON).read_text(encoding="utf-8"))
+    assert doc["warnings"] == [  # sorted by code, then side
+        {"code": "MISSING_OPTIONAL_COLUMN", "side": "REFERENCE", "columns": ["customer_name"]},
+        {"code": "SCHEMA_EXTRA_COLUMN", "side": "SOURCE", "columns": ["note"]},
+        {"code": "SCHEMA_EXTRA_COLUMN", "side": "TARGET", "columns": ["load_batch"]}]
+    checks = {c["check_name"]: c for c in doc["checks"]}
+    assert (checks["SCHEMA_DRIFT"]["status"], checks["MISSING_OPTIONAL_COLUMN"]["status"]) == ("WARN", "WARN")
+    assert checks["EMPTY_BATCH"]["status"] == "PASS"
+    assert doc["key_status_counts"]["MATCHED"] == 2  # extra columns are ignored, never compared
+
+
 def test_report_command_errors_exit_2(sample_run, tmp_path, capsys):
     out, _ = sample_run
     code, _, err = run_cli(report_cli(out, "nope-a1"), capsys)

@@ -25,6 +25,7 @@ from typing import Any
 from recon.repository import bronze_repo
 from recon.repository.silver_repo import KEY_COLUMN
 from recon.service.config import Config, FieldSpec
+from recon.service.ingest import csv_error_detail
 from recon.service.normalize import NormalizeError, normalize_value, validate_row
 
 SOURCE, TARGET, REFERENCE = "SOURCE", "TARGET", "REFERENCE"
@@ -115,7 +116,7 @@ def parse_record(raw_text: str) -> list[str] | str:
     try:
         rows = list(csv.reader(io.StringIO(raw_text, newline=""), strict=True))
     except csv.Error as exc:
-        return f"CSV quoting error: {exc}"
+        return csv_error_detail(exc)
     if len(rows) != 1:
         return f"CSV quoting error: record parses as {len(rows)} rows"
     return rows[0]

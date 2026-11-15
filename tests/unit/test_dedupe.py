@@ -287,3 +287,35 @@ def test_same_lines_give_same_clean_rows_on_both_sides(run_silver):
     assert [r["order_id"] for r in snapshot[0]] == ["A", "B"]
     assert snapshot[1] == [r | {"side": "TARGET", "source_file": snapshot[1][i]["source_file"]}
                            for i, r in enumerate(snapshot[0])]
+
+
+# --------------------------------------------------------------------------- step 9: QA-pass edge cases (P1-P16)
+
+
+def test_keys_differing_only_by_case_or_outer_whitespace_are_one_key(run_silver):
+    conn, result = run_silver(source=[order_row(order_id="o1"), order_row(order_id=" O1 "),        # same payload
+                                      order_row(order_id="o2", amount="1.00"), order_row(order_id="O2", amount="2.00")])
+    assert dispositions(conn) == {3: ("DUPLICATE", "DUPLICATE_EXACT"),
+                                  4: ("DUPLICATE", "CONFLICTING_DUPLICATE"), 5: ("DUPLICATE", "CONFLICTING_DUPLICATE")}
+    assert [r["order_id"] for r in clean(conn)] == ["O1"]
+    assert result.sides["SOURCE"].conflict_keys == ["O2"]
+
+
+def test_versions_within_the_same_second_tie_and_conflict(run_silver):
+    # DESIGN 7.2: fractional seconds are truncated, so .100 and .900 are the same version. Different payloads
+    # are then flagged as a CONFLICT: the newer one is never silently picked or dropped.
+    conn, result = run_silver(source=[order_row(amount="10.00", updated_at="2026-01-01T01:00:00.100"),
+                                      order_row(amount="11.00", updated_at="2026-01-01T01:00:00.900")])
+    assert clean(conn) == []
+    assert dispositions(conn) == {2: ("DUPLICATE", "CONFLICTING_DUPLICATE"), 3: ("DUPLICATE", "CONFLICTING_DUPLICATE")}
+    assert q_by_line(conn)[2]["detail"] == "2 different payloads at updated_at 2026-01-01T01:00:00Z on lines 2, 3"
+    assert result.sides["SOURCE"].conflict_keys == ["O1"]
+
+
+def test_same_instant_with_different_offsets_is_the_same_version(run_silver):
+    conn, _ = run_silver(source=[order_row(updated_at="2026-01-01T10:00:00+01:00"),
+                                 order_row(updated_at="2026-01-01T09:00:00Z"),
+                                 order_row(updated_at="2026-01-01 04:00:00-05:00")])
+    [row] = clean(conn)
+    assert (row["line_no"], row["updated_at"]) == (2, "2026-01-01T09:00:00Z")
+    assert dispositions(conn) == {3: ("DUPLICATE", "DUPLICATE_EXACT"), 4: ("DUPLICATE", "DUPLICATE_EXACT")}
