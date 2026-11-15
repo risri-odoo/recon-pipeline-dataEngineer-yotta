@@ -2,7 +2,8 @@
 
 Status: rev 3, all review questions resolved (2026-11-15). Every reason code, status and check name in
 section 4 comes from the reviewed catalogue. Do not rename or add any of them without sign-off.
-Approved additions since rev 3: batch reject `MALFORMED_FILE` (4.1) and FAILED reason `INPUT_CHANGED` (section 3, `run`), both 2026-11-15.
+Approved additions since rev 3: batch reject `MALFORMED_FILE` (4.1) and FAILED reason `INPUT_CHANGED` (section 3, `run`), both 2026-11-15;
+column `run.config_json` and the `recon report` command (section 6.7), 2026-11-15.
 
 ---
 
@@ -35,7 +36,7 @@ flowchart LR
         AR[(aggregate_result)]
         CR[(check_result)]
     end
-    OUT[out/&lt;run_id&gt;/<br/>report.json<br/>mismatches.csv<br/>quarantine.csv<br/>metrics.json<br/>run.log]
+    OUT[out/&lt;run_id&gt;/<br/>report.json<br/>mismatches.csv<br/>field_diffs.csv<br/>quarantine.csv<br/>summary.md<br/>metrics.json<br/>run.log]
 
     S & T & R & C --> RUN
     S & T & R -->|land lines verbatim| RAW
@@ -124,6 +125,7 @@ Conventions:
 | source_file / target_file / reference_file | TEXT NOT NULL | paths as given |
 | source_sha256 / target_sha256 / reference_sha256 | TEXT | raw-bytes hash. NULL if the file is missing |
 | config_sha256 | TEXT NOT NULL | canonical config hash |
+| config_json | TEXT | the canonical config JSON that `config_sha256` hashes (section 5). Written on every RUNNING and SKIPPED row; `recon report` rebuilds the config from it and refuses it unless it hashes to `config_sha256` |
 | started_at / finished_at | TEXT | the only non-deterministic columns |
 | failure_reason | TEXT | REJECTED: the batch-reject code. FAILED: `INVARIANT_VIOLATION:<check>`, `INPUT_CHANGED` (a file's bytes changed between the batch-check pass and the landing pass) or `UNEXPECTED_ERROR`. ABANDONED: `STALE_RUNNING` |
 | failure_detail | TEXT | REJECTED: every batch reject as JSON `[{side, file, code, detail}]`. FAILED: invariant counts as JSON; for INPUT_CHANGED `{side, file, expected_sha256, actual_sha256}` (`MISSING` if the file vanished); otherwise the exception type and message |
@@ -421,6 +423,10 @@ stateDiagram-v2
    - At the end it prints a summary table (`batch_id, run_id, status, recon_status, exit_code`) sorted by batch_id.
    - The process exit code is the maximum over all lines.
    - Re-running the same manifest skips pairs that already SUCCEEDED, so backfill is idempotent.
+7. **Report outputs.** After a SUCCEEDED run (and each SUCCEEDED backfill line) the report files are built from the DB and written to `out/<run_id>/`: `report.json`, `mismatches.csv`, `field_diffs.csv`, `quarantine.csv`, `summary.md` (shape: `docs/REPORT_SCHEMA.md`).
+   - They are written into a staging directory and renamed into place as one set, so a crash never leaves half a report; `run.log` and `metrics.json` are carried over.
+   - `recon report --run-id ID` regenerates them from the DB for a SUCCEEDED run (config from `run.config_json`); any other status exits 2.
+   - FAILED and REJECTED runs get no report files. SKIPPED never rewrites them (6.2).
 
 ---
 
@@ -445,8 +451,11 @@ stateDiagram-v2
     - Duplicate customer_ids keep the first occurrence and are not quarantined, since only existence matters.
 11. **Exact duplicates.** "Identical payload" means identical *normalized* logical fields, so whitespace or case differences that normalize away count as identical.
 12. **Determinism scope.**
-    - Same inputs + same config + a fresh DB give byte-identical outputs except `started_at`, `finished_at` and `metrics.json`.
-    - A `--force` attempt changes only the `-aN` suffix of run_id.
+    - Same inputs + same config + a fresh DB give byte-identical outputs, except the run timestamps `started_at` and `finished_at` (in `report.json` and `summary.md`).
+    - `run.log` and `metrics.json` are the non-deterministic outputs; nothing from them enters the report files.
+    - `recon report --run-id` on an unchanged DB rewrites byte-identical report files.
+    - A `--force` attempt changes only the `-aN` suffix of run_id (and `attempt`, `forced` in the report).
+    - Every output is sorted by business key, then column (quarantine: side SOURCE → TARGET → REFERENCE, then line_no).
     - JSON is written with sorted keys, `ensure_ascii=False` and a final `\n`.
     - CSV is written with `newline=""` and `lineterminator="\n"`.
 13. **Metrics.** Timings and peak memory go to `metrics.json` only, never into `report.json`, so the report stays byte-comparable.
@@ -462,3 +471,5 @@ stateDiagram-v2
 2. Currency codes are only checked for shape (`[A-Z]{3}`), not against ISO 4217.
 3. Timestamp comparison is at whole-second precision. Sub-second differences are invisible.
 4. There is no concurrency control beyond the RUNNING/stale rule; two processes started within the same instant on the same inputs are not guarded against (no PID or lock checks).
+5. There are no schema migrations. Tables are created with `CREATE TABLE IF NOT EXISTS`, so a DB created before a schema change (for example the `run.config_json` column) must be recreated; its runs can no longer be written to or reported.
+6. On Windows, publishing a report renames the run folder, which fails if another process holds a file in it open (for example a report file open in an editor that locks it). Nothing is lost: the previous folder is restored, the command exits 2, and `recon report --run-id` can be rerun once the file is closed.

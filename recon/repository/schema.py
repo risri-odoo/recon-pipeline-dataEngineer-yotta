@@ -29,6 +29,7 @@ DDL: tuple[str, ...] = (
         target_sha256     TEXT,
         reference_sha256  TEXT,
         config_sha256     TEXT NOT NULL,
+        config_json       TEXT,
         started_at        TEXT NOT NULL,
         finished_at       TEXT,
         failure_reason    TEXT,

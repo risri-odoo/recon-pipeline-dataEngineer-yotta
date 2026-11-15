@@ -251,7 +251,8 @@ def _admit(conn: sqlite3.Connection, request: RunRequest, run_key: str, hashes: 
     started_at = utc_iso(now)
     row = dict(run_key=run_key, source_file=paths[SOURCE], target_file=paths[TARGET],
                reference_file=paths[REFERENCE], source_sha256=hashes[SOURCE], target_sha256=hashes[TARGET],
-               reference_sha256=hashes[REFERENCE], config_sha256=config.config_sha256, started_at=started_at)
+               reference_sha256=hashes[REFERENCE], config_sha256=config.config_sha256, config_json=config.config_json,
+               started_at=started_at)
     in_progress: RunInProgress | None = None
 
     with transaction(conn):

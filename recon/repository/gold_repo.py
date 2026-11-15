@@ -404,3 +404,64 @@ def count_field_diffs(conn: sqlite3.Connection, run_id: str) -> list[dict[str, A
     rows = conn.execute("SELECT field_name, diff_type, COUNT(*) AS count FROM field_diff WHERE run_id = ?"
                         " GROUP BY field_name, diff_type ORDER BY field_name, diff_type", (run_id,)).fetchall()
     return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- report readers (streamed)
+
+_STATE_SQL = """CASE WHEN {c}.order_id IS NOT NULL THEN 'CLEAN'
+            WHEN {q}.reason_code IS NOT NULL THEN {q}.reason_code
+            ELSE 'ABSENT' END"""
+
+
+def iter_non_matched(conn: sqlite3.Connection, run_id: str, value_columns: Sequence[str]) -> sqlite3.Cursor:
+    """Every non-MATCHED key with both sides' clean values side by side, one row per (key, differing field).
+
+    Columns: order_id, key_status, note, source_line_no, target_line_no, source_state, target_state,
+    s_<col> and t_<col> for each of value_columns (clean_record columns), field_name (NULL when the key
+    has no field_diff). A side's state is CLEAN (clean row), the reason_code of the deciding quarantined
+    line (key_result.<side>_line_no), or ABSENT. Ordered by key, then field_name.
+    """
+    cols = [_ident(c) for c in value_columns]
+    values = ", ".join([f"s.{c} AS s_{c}" for c in cols] + [f"t.{c} AS t_{c}" for c in cols])
+    sql = f"""
+SELECT k.order_id, k.key_status, k.note, k.source_line_no, k.target_line_no,
+       {_STATE_SQL.format(c='s', q='qs')} AS source_state,
+       {_STATE_SQL.format(c='t', q='qt')} AS target_state,
+       {values},
+       d.field_name
+FROM key_result AS k
+LEFT JOIN clean_record AS s ON s.run_id = k.run_id AND s.side = 'SOURCE' AND s.order_id = k.order_id
+LEFT JOIN clean_record AS t ON t.run_id = k.run_id AND t.side = 'TARGET' AND t.order_id = k.order_id
+LEFT JOIN quarantine AS qs ON qs.run_id = k.run_id AND qs.side = 'SOURCE' AND qs.line_no = k.source_line_no
+LEFT JOIN quarantine AS qt ON qt.run_id = k.run_id AND qt.side = 'TARGET' AND qt.line_no = k.target_line_no
+LEFT JOIN field_diff AS d ON d.run_id = k.run_id AND d.order_id = k.order_id
+WHERE k.run_id = :run_id AND k.key_status <> 'MATCHED'
+ORDER BY k.order_id, d.field_name
+"""
+    return conn.execute(sql, {"run_id": run_id})
+
+
+def iter_field_diffs(conn: sqlite3.Connection, run_id: str) -> sqlite3.Cursor:
+    """field_diff rows of a run, ordered by key then field_name."""
+    return conn.execute(f"SELECT {', '.join(FIELD_DIFF_COLUMNS)} FROM field_diff WHERE run_id = ?"
+                        " ORDER BY order_id, field_name", (run_id,))
+
+
+def aggregate_breakdown_by_status(conn: sqlite3.Connection, run_id: str, measure: Measure) -> list[dict[str, Any]]:
+    """One measure over all clean rows, split by key_status: keys (with a clean row on either side),
+    source_value, target_value. The per-status deltas add up to the overall delta, because every clean
+    row belongs to exactly one key_result (KEY_COVERAGE). NULL measure values count as 0."""
+    m_s, m_t = _measure_expr(measure, "s"), _measure_expr(measure, "t")
+    rows = conn.execute(f"""
+        SELECT k.key_status,
+               COUNT(*) AS keys,
+               COALESCE(SUM(CASE WHEN s.order_id IS NOT NULL THEN COALESCE({m_s}, 0) END), 0) AS source_value,
+               COALESCE(SUM(CASE WHEN t.order_id IS NOT NULL THEN COALESCE({m_t}, 0) END), 0) AS target_value
+        FROM key_result AS k
+        LEFT JOIN clean_record AS s ON s.run_id = k.run_id AND s.side = 'SOURCE' AND s.order_id = k.order_id
+        LEFT JOIN clean_record AS t ON t.run_id = k.run_id AND t.side = 'TARGET' AND t.order_id = k.order_id
+        WHERE k.run_id = :run_id AND (s.order_id IS NOT NULL OR t.order_id IS NOT NULL)
+        GROUP BY k.key_status
+        ORDER BY k.key_status
+        """, {"run_id": run_id}).fetchall()
+    return [dict(r) for r in rows]

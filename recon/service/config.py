@@ -73,6 +73,7 @@ class Config:
     reference: ReferenceSpec | None
     aggregates: AggregateSpec
     config_sha256: str
+    config_json: str  # canonical JSON (sorted keys, defaults applied) that config_sha256 hashes; stored on run
 
     def field(self, name: str) -> FieldSpec:
         for spec in self.fields:
@@ -155,13 +156,33 @@ def parse_config(raw: Any) -> Config:
         reference=reference,
         aggregates=aggregates,
         config_sha256=config_sha256(canonical),
+        config_json=canonical_config_json(canonical),
     )
+
+
+def canonical_config_json(canonical: dict[str, Any]) -> str:
+    """The canonical JSON text of the config after defaults (DESIGN section 5)."""
+    return json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def config_sha256(canonical: dict[str, Any]) -> str:
     """sha256 of the canonical JSON of the config after defaults (DESIGN section 5)."""
-    text = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return sha256_text(canonical_config_json(canonical))
+
+
+def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def load_stored_config(config_json: str, expected_sha256: str) -> Config:
+    """Rebuild a Config from run.config_json, refusing it unless it hashes to run.config_sha256."""
+    if sha256_text(config_json) != expected_sha256:
+        raise ConfigError("stored config_json does not match the run's config_sha256")
+    try:
+        raw = json.loads(config_json)
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"stored config_json is not valid JSON: {exc}") from None
+    return parse_config(raw)
 
 
 def _parse_field(raw: Any, index: int, canonical: dict[str, Any]) -> FieldSpec:

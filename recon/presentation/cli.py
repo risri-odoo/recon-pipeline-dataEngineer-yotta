@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 
 from recon.generator.generate import generate, write_dataset
-from recon.presentation.report_writer import write_metrics
-from recon.service import backfill, pipeline
+from recon.presentation.report_writer import REPORT_JSON, write_metrics, write_report
+from recon.service import backfill, pipeline, report
 from recon.service.config import ConfigError
 from recon.service.metrics import configure_stderr_logging
 
@@ -41,6 +41,13 @@ def build_parser() -> argparse.ArgumentParser:
                                "(relative paths resolve against the manifest's directory)")
     _add_run_options(back)
     back.set_defaults(func=_cmd_backfill)
+
+    rep = sub.add_parser("report", help="Regenerate the report files of a SUCCEEDED run from the DB.")
+    rep.add_argument("--run-id", required=True, help="the SUCCEEDED run to report on")
+    rep.add_argument("--db", type=Path, default=pipeline.DEFAULT_DB, help="SQLite DB (default: out/recon.db)")
+    rep.add_argument("--out", type=Path, default=pipeline.DEFAULT_OUT,
+                     help="report files go to <out>/<run_id>/ (default: out)")
+    rep.set_defaults(func=_cmd_report)
     return parser
 
 
@@ -85,8 +92,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return pipeline.EXIT_ERROR
 
+    exit_code = outcome.exit_code
     if outcome.run_dir is not None and outcome.metrics is not None:
         write_metrics(outcome.run_dir, outcome.metrics)
+    report_path = args.out / outcome.result_run_id / REPORT_JSON
+    if outcome.status == pipeline.SUCCEEDED and not _publish_report(args.db, args.out, outcome.run_id):
+        exit_code = pipeline.EXIT_ERROR
+    elif outcome.status == pipeline.SKIPPED and not report_path.is_file():  # never rewritten (DESIGN 6.2)
+        print(f"warning: report not found at {report_path.as_posix()}; regenerate it with "
+              f"`recon report --run-id {outcome.result_run_id}`", file=sys.stderr)
     fields = {"status": outcome.status, "run_id": outcome.result_run_id}
     if outcome.status == pipeline.SKIPPED:
         fields["skip_run_id"] = outcome.run_id
@@ -94,8 +108,24 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if outcome.failure_reason:
         fields["failure_reason"] = outcome.failure_reason
     fields["out"] = (args.out / outcome.result_run_id).as_posix()
+    if outcome.status in (pipeline.SUCCEEDED, pipeline.SKIPPED):
+        fields["report"] = report_path.as_posix()
     print(" ".join(f"{k}={v}" for k, v in fields.items()))
-    return outcome.exit_code
+    return exit_code
+
+
+def _publish_report(db_path: Path, out_dir: Path, run_id: str) -> Path | None:
+    """Build the report of a SUCCEEDED run from the DB and publish it into <out>/<run_id>/ atomically.
+    Returns the report.json path, or None (after printing the error) when it could not be written."""
+    try:
+        with report.open_report(db_path, run_id) as bundle:
+            return write_report(out_dir / run_id, bundle)
+    except report.ReportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - the run itself succeeded; only its outputs are missing
+        print(f"error: report for {run_id} not written: {type(exc).__name__}: {exc}; "
+              f"regenerate it with `recon report --run-id {run_id}`", file=sys.stderr)
+    return None
 
 
 SUMMARY_COLUMNS = ("batch_id", "run_id", "status", "recon_status", "exit_code")
@@ -112,12 +142,25 @@ def _cmd_backfill(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return pipeline.EXIT_ERROR
 
+    exit_code = result.exit_code
     for line in result.lines:
         outcome = line.outcome
         if outcome is not None and outcome.run_dir is not None and outcome.metrics is not None:
             write_metrics(outcome.run_dir, outcome.metrics)
+        if outcome is not None and outcome.status == pipeline.SUCCEEDED:
+            if not _publish_report(args.db, args.out, outcome.run_id):
+                exit_code = pipeline.EXIT_ERROR
     print(format_summary(result.summary))
-    return result.exit_code
+    return exit_code
+
+
+def _cmd_report(args: argparse.Namespace) -> int:
+    """Rewrite the five report files of a SUCCEEDED run; run.log and metrics.json are kept."""
+    path = _publish_report(args.db, args.out, args.run_id)
+    if path is None:
+        return pipeline.EXIT_ERROR
+    print(f"run_id={args.run_id} report={path.as_posix()}")
+    return 0
 
 
 def format_summary(lines: list[backfill.BackfillLine]) -> str:

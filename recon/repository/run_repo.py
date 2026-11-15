@@ -11,7 +11,7 @@ from typing import Any
 
 RUN_COLUMNS = ("run_id", "run_key", "attempt", "status", "recon_status", "exit_code", "forced",
                "skipped_of_run_id", "source_file", "target_file", "reference_file",
-               "source_sha256", "target_sha256", "reference_sha256", "config_sha256",
+               "source_sha256", "target_sha256", "reference_sha256", "config_sha256", "config_json",
                "started_at", "finished_at", "failure_reason", "failure_detail")
 
 

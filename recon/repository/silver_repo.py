@@ -98,3 +98,19 @@ def count_quarantine(conn: sqlite3.Connection, run_id: str, side: str, category:
         sql += " AND category = ?"
         params.append(category)
     return conn.execute(sql, params).fetchone()[0]
+
+
+# The logical-value columns of clean_record (everything except run/side/key and lineage).
+CLEAN_VALUE_COLUMNS = tuple(c for c in CLEAN_COLUMNS
+                            if c not in ("run_id", "side", KEY_COLUMN, "payload_sha256", "source_file", "line_no"))
+
+
+def iter_quarantine(conn: sqlite3.Connection, run_id: str) -> sqlite3.Cursor:
+    """Every quarantine row of a run, ordered SOURCE -> TARGET -> REFERENCE, then line_no."""
+    return conn.execute(
+        f"SELECT {', '.join(QUARANTINE_COLUMNS)} FROM quarantine WHERE run_id = ?"
+        " ORDER BY CASE side WHEN 'SOURCE' THEN 0 WHEN 'TARGET' THEN 1 ELSE 2 END, line_no", (run_id,))
+
+
+def count_ref_customers(conn: sqlite3.Connection, run_id: str) -> int:
+    return conn.execute("SELECT COUNT(*) FROM ref_customer WHERE run_id = ?", (run_id,)).fetchone()[0]
