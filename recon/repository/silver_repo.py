@@ -76,6 +76,13 @@ def count_clean_records(conn: sqlite3.Connection, run_id: str, side: str) -> int
                         (run_id, side)).fetchone()[0]
 
 
+def count_unattributable_rejects(conn: sqlite3.Connection, run_id: str) -> int:
+    """SOURCE/TARGET ROW_REJECT rows without a business key (DESIGN 4.8: they fail recon on their own)."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM quarantine WHERE run_id = ? AND side IN ('SOURCE', 'TARGET')"
+        " AND category = 'ROW_REJECT' AND order_id IS NULL", (run_id,)).fetchone()[0]
+
+
 def count_quarantine(conn: sqlite3.Connection, run_id: str, side: str, category: str | None = None) -> int:
     sql = "SELECT COUNT(*) FROM quarantine WHERE run_id = ? AND side = ?"
     params: list[Any] = [run_id, side]

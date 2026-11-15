@@ -69,3 +69,39 @@ def run_silver(tmp_path):
     yield _run
     for c in conns:
         c.close()
+
+
+# --------------------------------------------------------------------------- GOLD helpers
+
+@pytest.fixture
+def run_gold(tmp_path, orders_config_dict):
+    """Write source/target/reference lines, then run bronze -> silver -> gold in a fresh DB.
+
+    Returns (conn, CompareResult). Each call uses its own directory, so one test can run several times.
+    swap=True exchanges the two files and the config's columns.source / columns.target maps.
+    """
+    from recon.service import ingest
+    from tests.gold_helpers import reconcile_files, swapped_config, swapped_paths
+
+    conns = []
+
+    def _run(source=(), target=(), reference=("C1,Alice", "C2,Bob"), config=None, *, swap=False,
+             src_header=SRC_HEADER, tgt_header=TGT_HEADER, ref_header=REF_HEADER):
+        work = tmp_path / f"run{len(conns)}"
+        work.mkdir()
+        files = {ingest.SOURCE: (src_header, source), ingest.TARGET: (tgt_header, target),
+                 ingest.REFERENCE: (ref_header, reference)}
+        paths = {}
+        for side, (header, lines) in files.items():
+            path = work / f"{side.lower()}.csv"
+            path.write_bytes(("\n".join([header, *lines]) + "\n").encode("utf-8"))
+            paths[side] = path
+        if swap:
+            config, paths = swapped_config(orders_config_dict), swapped_paths(paths)
+        conn, result = reconcile_files(work / "recon.db", paths, config or load_config(ORDERS_CONFIG))
+        conns.append(conn)
+        return conn, result
+
+    yield _run
+    for c in conns:
+        c.close()

@@ -277,6 +277,9 @@ def _parse_aggregates(raw: Any, by_name: dict[str, FieldSpec]) -> AggregateSpec:
     groups = tuple(_known(n, by_name, "aggregates.group_by") for n in _list(raw.get("group_by", []), "aggregates.group_by"))
     _no_duplicates(sums, "aggregates.sum_fields")
     _no_duplicates(groups, "aggregates.group_by")
+    # aggregate_result.group_by is the field name upper-cased; 'ALL' is reserved for the overall grouping.
+    if "all" in groups:
+        raise ConfigError("aggregates.group_by: field 'all' collides with the reserved ALL grouping")
     return AggregateSpec(sum_fields=sums, group_by=groups)
 
 

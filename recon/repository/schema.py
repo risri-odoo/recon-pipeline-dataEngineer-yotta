@@ -125,11 +125,13 @@ DDL: tuple[str, ...] = (
         FOREIGN KEY (run_id, order_id) REFERENCES key_result (run_id, order_id)
     )
     """,
+    # metric and group_by come from the config (ROW_COUNT / SUM_<field>, ALL / <field>) and are validated
+    # in config.py, so they carry no CHECK; only fixed catalogues are enforced in the DDL.
     """
     CREATE TABLE IF NOT EXISTS aggregate_result (
         run_id            TEXT NOT NULL REFERENCES run (run_id),
-        metric            TEXT NOT NULL CHECK (metric IN ('ROW_COUNT', 'SUM_AMOUNT', 'SUM_DISCOUNT')),
-        group_by          TEXT NOT NULL CHECK (group_by IN ('ALL', 'STATUS', 'CURRENCY')),
+        metric            TEXT NOT NULL,
+        group_by          TEXT NOT NULL,
         group_value       TEXT NOT NULL,
         source_value      INTEGER NOT NULL,
         target_value      INTEGER NOT NULL,

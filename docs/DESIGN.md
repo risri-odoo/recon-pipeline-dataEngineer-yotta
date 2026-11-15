@@ -312,7 +312,7 @@ Rejected rows keep their ROW_REJECT code in every case; they are never re-labell
 | MATCHED | clean on both sides, zero field diffs |
 | MISMATCHED | clean on both sides, ≥ 1 field diff |
 | SOURCE_REJECTED | no clean source row, and the source has a ROW_REJECT for this key |
-| TARGET_REJECTED | clean source row, no clean target row, and the target has a ROW_REJECT for this key |
+| TARGET_REJECTED | no clean target row, and the target has a ROW_REJECT for this key (with a clean source row, or with nothing on the source side; signed off 2026-11-15) |
 | MISSING_IN_TARGET | clean source row, nothing for the key on the target side |
 | EXTRA_IN_TARGET | clean target row, nothing for the key on the source side |
 

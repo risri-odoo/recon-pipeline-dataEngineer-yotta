@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from recon.repository import bronze_repo, run_repo
+from recon.repository import bronze_repo, gold_repo, run_repo, silver_repo
 from recon.repository.db import connect, transaction
 from recon.repository.schema import TABLES, create_schema, list_tables
 
@@ -112,3 +112,27 @@ def test_mark_stale_running(conn):
         "ABANDONED", "STALE_RUNNING", "2026-11-15T10:00:00Z")
     assert run_repo.get_run(conn, "new")["status"] == "RUNNING"
     assert run_repo.get_run(conn, "done")["status"] == "SUCCEEDED"
+
+
+def _clean_row(run_id, side, line_no, order_id, discount_minor):
+    return {"run_id": run_id, "side": side, "order_id": order_id, "customer_id": "C1",
+            "order_ts": "2026-01-01T00:00:00Z", "status": "PLACED", "amount_minor": 1000, "currency": "USD",
+            "discount_minor": discount_minor, "updated_at": "2026-01-01T01:00:00Z", "payload_sha256": "p",
+            "source_file": side.lower(), "line_no": line_no}
+
+
+def test_aggregate_null_group_value_and_config_derived_group_by(conn):
+    # group_by 'DISCOUNT' is not one of the orders-config groupings: the DDL no longer hardcodes them.
+    add_run(conn, "r1")
+    rows = [("SOURCE", 2, "O1", None), ("SOURCE", 3, "O2", 150), ("TARGET", 2, "O1", None)]
+    with transaction(conn):
+        bronze_repo.insert_raw_records(conn, [("r1", side, line, side.lower(), "DATA", "x")
+                                              for side, line, _, _ in rows])
+        silver_repo.insert_clean_records(conn, [_clean_row("r1", *r) for r in rows])
+        gold_repo.insert_key_results(conn, "r1")
+        gold_repo.insert_aggregates(conn, "r1", [gold_repo.Measure("ROW_COUNT", None)],
+                                    [gold_repo.Grouping("DISCOUNT", "discount_minor")])
+    got = [(a["metric"], a["group_by"], a["group_value"], a["source_value"], a["target_value"], a["delta"],
+            a["explained_delta"], a["unexplained_delta"]) for a in gold_repo.fetch_aggregates(conn, "r1")]
+    assert got == [("ROW_COUNT", "DISCOUNT", "150", 1, 0, 1, 1, 0),
+                   ("ROW_COUNT", "DISCOUNT", "NULL", 1, 1, 0, 0, 0)]
