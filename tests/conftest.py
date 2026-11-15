@@ -39,7 +39,7 @@ def run_silver(tmp_path):
     from recon.repository.db import connect, transaction
     from recon.repository.schema import create_schema
     from recon.service import ingest
-    from recon.service.dedupe import build_silver
+    from recon.service.pipeline import build_silver
 
     conns = []
 

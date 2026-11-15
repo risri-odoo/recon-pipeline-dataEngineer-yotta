@@ -8,7 +8,7 @@ For each side, raw_record DATA rows are read in line_no order and re-parsed stri
 
 The REFERENCE side is validated first: an empty customer_id is MISSING_REQUIRED, a duplicate
 customer_id keeps its first occurrence and is not quarantined (DESIGN 7.1 #10).
-Nothing is written here; dedupe.build_silver writes the results.
+Nothing is written here; pipeline.build_silver writes the results.
 """
 
 from __future__ import annotations

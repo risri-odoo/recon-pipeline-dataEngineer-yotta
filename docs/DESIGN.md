@@ -35,7 +35,7 @@ flowchart LR
         AR[(aggregate_result)]
         CR[(check_result)]
     end
-    OUT[out/&lt;run_id&gt;/<br/>report.json<br/>mismatches.csv<br/>quarantine.csv<br/>metrics.json]
+    OUT[out/&lt;run_id&gt;/<br/>report.json<br/>mismatches.csv<br/>quarantine.csv<br/>metrics.json<br/>run.log]
 
     S & T & R & C --> RUN
     S & T & R -->|land lines verbatim| RAW
@@ -412,7 +412,7 @@ stateDiagram-v2
 4. **Retry.** After FAILED, REJECTED or ABANDONED, re-running the same inputs simply creates the next attempt. No flag is needed.
 5. **Restart / stale RUNNING.** Before starting, look for a RUNNING attempt with the same run_key:
    - If its `started_at` is older than `--stale-after-minutes` (CLI flag, default 60, not part of the config hash), it becomes ABANDONED (`failure_reason = STALE_RUNNING`) and a new attempt starts.
-   - Otherwise, print `run in progress`, exit 2 and create no row.
+   - Stale attempts are marked ABANDONED first. If a RUNNING attempt younger than the threshold still remains, the ABANDONED updates are committed, `run in progress` is printed, the exit code is 2 and no new row is created.
    - There are no PID checks. Restart never resumes mid-run; it always reprocesses from the input files.
 6. **Backfill.** `recon backfill --manifest PATH`.
    - The manifest is a CSV with columns `batch_id, source_path, target_path, reference_path`.

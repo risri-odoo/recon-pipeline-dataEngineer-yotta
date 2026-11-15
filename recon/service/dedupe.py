@@ -10,21 +10,16 @@ With max_u = the maximum updated_at over those rows:
 Rejected rows keep their ROW_REJECT code. Rows are processed in line_no order whatever order they come in,
 so arrival order never changes the outcome.
 
-`build_silver` runs the whole SILVER stage (reference, validate, dedupe) and writes it in the caller's
-transaction.
+The SILVER stage orchestration (reference -> validate -> dedupe -> write) is pipeline.build_silver.
 """
 
 from __future__ import annotations
 
-import sqlite3
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from recon.repository import silver_repo
-from recon.service.config import Config
-from recon.service.validate import (SOURCE, TARGET, QuarantineEntry, ReferenceValidation, ValidRow,
-                                    validate_reference, validate_side)
+from recon.service.validate import QuarantineEntry, ReferenceValidation, ValidRow
 
 DUPLICATE = "DUPLICATE"
 DUPLICATE_EXACT = "DUPLICATE_EXACT"
@@ -122,35 +117,3 @@ def dedupe(valid: Iterable[ValidRow], rejects: Iterable[QuarantineEntry] = ()) -
 
     result.dispositions.sort(key=lambda d: d.line_no)
     return result
-
-
-def build_silver(conn: sqlite3.Connection, run_id: str, config: Config) -> SilverResult:
-    """Validate the reference and both order sides, dedupe, and write SILVER. The caller owns the transaction."""
-    reference: ReferenceValidation | None = None
-    reference_ids: frozenset[str] | None = None
-    if config.reference is not None:
-        reference = validate_reference(conn, run_id, config)
-        reference_ids = reference.ids  # loaded once, shared by both sides
-        silver_repo.insert_ref_customers(conn, ({"run_id": run_id, "customer_id": cid, "customer_name": name}
-                                                for cid, name in sorted(reference.customers)))
-        silver_repo.insert_quarantine(conn, (q.as_row(run_id) for q in reference.rejects))
-
-    result = SilverResult(sides={}, reference=reference)
-    for side in (SOURCE, TARGET):
-        validated = validate_side(conn, run_id, side, config, reference_ids)
-        deduped = dedupe(validated.valid, validated.rejects)
-        quarantine = sorted(validated.rejects + deduped.dispositions, key=lambda q: q.line_no)
-        silver_repo.insert_quarantine(conn, (q.as_row(run_id) for q in quarantine))
-        silver_repo.insert_clean_records(conn, (w.as_clean_row(run_id, config) for w in deduped.winners))
-        counts = SideCounts(
-            side=side,
-            rows_read=validated.rows_read,
-            accepted=len(deduped.winners),
-            rejected=len(validated.rejects),
-            duplicate_exact=deduped.count(DUPLICATE_EXACT),
-            superseded=deduped.count(SUPERSEDED),
-            conflicting_rows=deduped.count(CONFLICTING_DUPLICATE),
-        )
-        result.sides[side] = SideSilver(counts, deduped.winners, quarantine, deduped.conflict_keys)
-    return result
-

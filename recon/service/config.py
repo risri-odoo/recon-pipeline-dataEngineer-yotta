@@ -277,6 +277,9 @@ def _parse_aggregates(raw: Any, by_name: dict[str, FieldSpec]) -> AggregateSpec:
     groups = tuple(_known(n, by_name, "aggregates.group_by") for n in _list(raw.get("group_by", []), "aggregates.group_by"))
     _no_duplicates(sums, "aggregates.sum_fields")
     _no_duplicates(groups, "aggregates.group_by")
+    for name in groups:
+        if by_name[name].type == "decimal":
+            raise ConfigError(f"aggregates.group_by: decimal field {name!r} cannot be a grouping (money is a measure)")
     # aggregate_result.group_by is the field name upper-cased; 'ALL' is reserved for the overall grouping.
     if "all" in groups:
         raise ConfigError("aggregates.group_by: field 'all' collides with the reserved ALL grouping")

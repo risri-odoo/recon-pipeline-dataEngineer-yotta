@@ -166,6 +166,13 @@ def create_schema(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
 
 
+def table_row_counts(conn: sqlite3.Connection, run_id: str | None = None) -> dict[str, int]:
+    """Row count of every table in TABLES, optionally only the rows of one run_id."""
+    where, params = (" WHERE run_id = ?", (run_id,)) if run_id is not None else ("", ())
+    return {table: conn.execute(f"SELECT COUNT(*) FROM {table}{where}", params).fetchone()[0]
+            for table in TABLES}
+
+
 def list_tables(conn: sqlite3.Connection) -> list[str]:
     rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").fetchall()
     return [row[0] for row in rows]

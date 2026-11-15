@@ -83,6 +83,14 @@ def count_unattributable_rejects(conn: sqlite3.Connection, run_id: str) -> int:
         " AND category = 'ROW_REJECT' AND order_id IS NULL", (run_id,)).fetchone()[0]
 
 
+def count_quarantine_by_reason(conn: sqlite3.Connection, run_id: str) -> dict[tuple[str, str], int]:
+    """(side, reason_code) -> number of quarantine rows for the run."""
+    rows = conn.execute(
+        "SELECT side, reason_code, COUNT(*) AS n FROM quarantine WHERE run_id = ?"
+        " GROUP BY side, reason_code ORDER BY side, reason_code", (run_id,)).fetchall()
+    return {(r["side"], r["reason_code"]): r["n"] for r in rows}
+
+
 def count_quarantine(conn: sqlite3.Connection, run_id: str, side: str, category: str | None = None) -> int:
     sql = "SELECT COUNT(*) FROM quarantine WHERE run_id = ? AND side = ?"
     params: list[Any] = [run_id, side]

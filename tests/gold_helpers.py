@@ -9,7 +9,7 @@ from recon.repository.schema import create_schema
 from recon.service import ingest
 from recon.service.compare import reconcile
 from recon.service.config import Config, parse_config
-from recon.service.dedupe import build_silver
+from recon.service.pipeline import build_silver
 
 GOLD_RUN_ID = "gold-a1"
 ROOT = Path(__file__).resolve().parents[1]
