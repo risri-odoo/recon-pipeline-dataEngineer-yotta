@@ -60,7 +60,7 @@ def test_report_digest_masks_run_timestamps_and_the_input_directory(tmp_path):
     def run_dir(name: str, input_dir: str, ts: str, body: str = "x") -> Path:
         d = tmp_path / name
         d.mkdir()
-        for f in bench.REPORT_FILES:
+        for f in bench.DIGEST_FILES:
             d.joinpath(f).write_text(f'{{"started_at": "{ts}", "file": "{input_dir}\\\\s.csv", "v": "{body}"}}\n',
                                      encoding="utf-8")
         return d

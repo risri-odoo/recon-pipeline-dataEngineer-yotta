@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from recon.generator.generate import generate, write_dataset
-from recon.presentation.report_writer import REPORT_FILES, write_report
+from recon.presentation.report_writer import DIGEST_FILES, write_report
 from recon.service import pipeline, report
 
 STAGES = ("batch_checks", "bronze", "silver", "gold")
@@ -164,7 +164,7 @@ def report_digest(run_dir: Path, input_dir: Path | None = None) -> str:
         spellings = sorted({s.encode("utf-8") for s in (raw, Path(raw).as_posix(), json.dumps(raw)[1:-1])},
                            key=len, reverse=True)
     h = hashlib.sha256()
-    for name in REPORT_FILES:
+    for name in DIGEST_FILES:
         data = _TIMESTAMP.sub(rb"\1<ts>", (run_dir / name).read_bytes())
         for spelling in spellings:
             data = data.replace(spelling, b"<input_dir>")

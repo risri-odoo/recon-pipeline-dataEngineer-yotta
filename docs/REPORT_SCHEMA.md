@@ -10,6 +10,7 @@ Every SUCCEEDED run writes these files to `out/<run_id>/`. They are built from t
 | `field_diffs.csv` | one row per differing compared field | record_key, column_name |
 | `quarantine.csv` | every quarantined record (row rejects and duplicate dispositions) | side (SOURCE, TARGET, REFERENCE), line_no |
 | `summary.md` | human-readable one-pager, `# Reconciliation PASS` or `FAIL` on line 1 | as report.json |
+| `summary.html` | the same one-pager as one self-contained HTML page (see below) | as summary.md |
 | `metrics.json`, `run.log` | timings, memory, logs. Written by the run, never by the report; not deterministic | — |
 
 Every CSV starts with a `run_id` column, so each exported row is traceable on its own, even when files
@@ -17,9 +18,9 @@ from several runs are concatenated.
 
 Format rules (DESIGN 7.1 #12): UTF-8, LF line endings. JSON has sorted keys, 2-space indent,
 `ensure_ascii=False` and a final newline. CSV has a header row, minimal quoting, and NULL written as an
-empty field. Apart from `run.started_at` and `run.finished_at` (also shown in `summary.md`), the report
+empty field. Apart from `run.started_at` and `run.finished_at` (also shown in `summary.md` and `summary.html`), the report
 files are byte-identical for the same inputs and config (a `--force` attempt also changes `run_id`,
-`attempt` and `forced`). The five report files are published together
+`attempt` and `forced`). The six report files are published together
 (staging directory, then rename), so you never see a partial set.
 
 Money is never a float. In `report.json` money aggregates are **integer minor units**, with `unit` and
@@ -167,6 +168,27 @@ are canonical text, money as fixed-point; an empty value is NULL (diff_type NULL
 `run_id, side, source_file, line_no, reason_code, detail, raw_text`: one row per quarantine row, both row
 rejects (DESIGN 4.3) and duplicate dispositions (DESIGN 4.4). `raw_text` is the record exactly as it
 was landed, so multi-line records are quoted.
+
+## summary.html
+
+The `summary.md` content for a browser, rendered from the same report dict (so it shows the same
+numbers as `report.json` and `summary.md`). One self-contained UTF-8 file with LF line endings: inline
+CSS only, no JavaScript, no external fonts, stylesheets or images, so it works offline. Light theme.
+Every value taken from the data is HTML-escaped (`&`, `<`, `>`, `"`, `'`). Top to bottom:
+
+1. Verdict banner: `Reconciliation PASS|FAIL`, `run_id`, run status and exit code (then dataset,
+   business key, attempt, `started_at`, `finished_at`).
+2. KPI tiles: total keys, MATCHED, non-matched, field diffs, quarantined rows, unattributable rejects
+   (`totals` and `key_status_counts.MATCHED`).
+3. Key status breakdown: one horizontal bar per key status in DESIGN 4.5 order, width = share of keys
+   (percent with 2 decimals, computed in `Decimal`), with the count.
+4. Where the overall deltas come from: per metric of `aggregate_explanation`, the same equation and
+   by-key-status rows as `summary.md`.
+5. Field differences: the non-zero `field_diff_counts`, by column and diff type.
+6. Non-matched keys (the `mismatch_samples` rows, as in `summary.md`), then checks and warnings.
+
+It is not part of the bench result digest (docs/PERFORMANCE.md), which stays over the original five
+files so digests remain comparable with earlier rows.
 
 ## Compatibility
 

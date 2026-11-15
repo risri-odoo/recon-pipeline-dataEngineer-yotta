@@ -40,7 +40,7 @@ flowchart LR
         AR[(aggregate_result)]
         CR[(check_result)]
     end
-    OUT[out/&lt;run_id&gt;/<br/>report.json<br/>mismatches.csv<br/>field_diffs.csv<br/>quarantine.csv<br/>summary.md<br/>metrics.json<br/>run.log]
+    OUT[out/&lt;run_id&gt;/<br/>report.json<br/>mismatches.csv<br/>field_diffs.csv<br/>quarantine.csv<br/>summary.md<br/>summary.html<br/>metrics.json<br/>run.log]
 
     S & T & R & C --> RUN
     S & T & R -->|land lines verbatim| RAW
@@ -443,7 +443,7 @@ stateDiagram-v2
    - At the end it prints a summary table (`batch_id, run_id, status, recon_status, exit_code`) sorted by batch_id.
    - The process exit code is the maximum over all lines.
    - Re-running the same manifest skips pairs that already SUCCEEDED, so backfill is idempotent.
-7. **Report outputs.** After a SUCCEEDED run (and each SUCCEEDED backfill line) the report files are built from the DB and written to `out/<run_id>/`: `report.json`, `mismatches.csv`, `field_diffs.csv`, `quarantine.csv`, `summary.md` (shape: `docs/REPORT_SCHEMA.md`).
+7. **Report outputs.** After a SUCCEEDED run (and each SUCCEEDED backfill line) the report files are built from the DB and written to `out/<run_id>/`: `report.json`, `mismatches.csv`, `field_diffs.csv`, `quarantine.csv`, `summary.md`, `summary.html` (shape: `docs/REPORT_SCHEMA.md`).
    - They are written into a staging directory and renamed into place as one set, so a crash never leaves half a report; `run.log` and `metrics.json` are carried over.
    - `recon report --run-id ID` regenerates them from the DB for a SUCCEEDED run (config from `run.config_json`); any other status exits 2.
    - FAILED and REJECTED runs get no report files. SKIPPED never rewrites them (6.2).
@@ -471,7 +471,7 @@ stateDiagram-v2
     - Duplicate customer_ids keep the first occurrence and are not quarantined, since only existence matters.
 11. **Exact duplicates.** "Identical payload" means identical *normalized* logical fields, so whitespace or case differences that normalize away count as identical.
 12. **Determinism scope.**
-    - Same inputs + same config + a fresh DB give byte-identical outputs, except the run timestamps `started_at` and `finished_at` (in `report.json` and `summary.md`).
+    - Same inputs + same config + a fresh DB give byte-identical outputs, except the run timestamps `started_at` and `finished_at` (in `report.json`, `summary.md` and `summary.html`).
     - `run.log` and `metrics.json` are the non-deterministic outputs; nothing from them enters the report files.
     - `recon report --run-id` on an unchanged DB rewrites byte-identical report files.
     - A `--force` attempt changes only the `-aN` suffix of run_id (and `attempt`, `forced` in the report).

@@ -6,6 +6,7 @@ Report files (all rebuilt from the DB by recon.service.report):
     field_diffs.csv   one row per differing compared field
     quarantine.csv    every quarantined record with its raw text
     summary.md        human-readable one-pager, PASS/FAIL at the top
+    summary.html      the same one-pager as a self-contained HTML page (inline CSS, no JavaScript)
 Also in the run dir, written elsewhere and kept as-is by a report write: run.log, metrics.json (the
 only non-deterministic outputs).
 
@@ -19,10 +20,12 @@ swap. JSON: sorted keys, ensure_ascii=False, final newline. CSV: newline="" and 
 from __future__ import annotations
 
 import csv
+import html
 import json
 import os
 import shutil
 from collections.abc import Iterable, Sequence
+from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
 from typing import Any
 
@@ -37,9 +40,13 @@ MISMATCHES_CSV = "mismatches.csv"
 FIELD_DIFFS_CSV = "field_diffs.csv"
 QUARANTINE_CSV = "quarantine.csv"
 SUMMARY_MD = "summary.md"
+SUMMARY_HTML = "summary.html"
 METRICS_FILE = "metrics.json"
 RUN_LOG = "run.log"
-REPORT_FILES = (REPORT_JSON, MISMATCHES_CSV, FIELD_DIFFS_CSV, QUARANTINE_CSV, SUMMARY_MD)
+REPORT_FILES = (REPORT_JSON, MISMATCHES_CSV, FIELD_DIFFS_CSV, QUARANTINE_CSV, SUMMARY_HTML, SUMMARY_MD)
+# The bench result digest covers only the original five files, so digests stay comparable with the rows
+# already recorded in docs/PERFORMANCE.md (summary.html is a pure rendering of report.json).
+DIGEST_FILES = (REPORT_JSON, MISMATCHES_CSV, FIELD_DIFFS_CSV, QUARANTINE_CSV, SUMMARY_MD)
 
 STAGING_SUFFIX = ".staging"
 BACKUP_SUFFIX = ".old"
@@ -143,12 +150,14 @@ def _swap(staging: Path, run_dir: Path, backup: Path) -> None:
 
 
 def write_report_files(directory: Path, bundle: ReportBundle) -> None:
-    """The five report files, written straight into `directory` (callers pass a staging dir)."""
+    """The six report files, written straight into `directory` (callers pass a staging dir)."""
     write_csv(directory / MISMATCHES_CSV, bundle.mismatch_columns, bundle.mismatch_rows())
     write_csv(directory / FIELD_DIFFS_CSV, FIELD_DIFF_CSV_COLUMNS, bundle.field_diff_rows())
     write_csv(directory / QUARANTINE_CSV, QUARANTINE_CSV_COLUMNS, bundle.quarantine_rows())
     with open(directory / REPORT_JSON, "w", encoding="utf-8", newline="") as fh:
         fh.write(dump_json(bundle.report))
+    with open(directory / SUMMARY_HTML, "w", encoding="utf-8", newline="") as fh:
+        fh.write(render_summary_html(bundle.report))
     with open(directory / SUMMARY_MD, "w", encoding="utf-8", newline="") as fh:
         fh.write(render_summary(bundle.report))
 
@@ -270,3 +279,159 @@ def render_summary(report: dict[str, Any]) -> str:
 
 def _side_ref(state: str, line_no: int | None) -> str:
     return state if line_no is None else f"{state} (line {line_no})"
+
+
+# --------------------------------------------------------------------------- summary.html
+
+_CSS = """\
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #f6f7f9; color: #1f2328;
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { margin: 0; font-size: 28px; }
+h2 { margin: 32px 0 12px; font-size: 18px; }
+h3 { margin: 20px 0 8px; font-size: 15px; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: 13px; }
+.banner { border-radius: 8px; padding: 18px 20px; border: 1px solid; }
+.banner.pass { background: #e6f4ea; border-color: #8fd19e; color: #0f5323; }
+.banner.fail { background: #fdecea; border-color: #f1a7a0; color: #82160d; }
+.banner p { margin: 6px 0 0; }
+.meta { color: #57606a; font-size: 13px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 16px; }
+.tile { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 12px 14px; }
+.tile .label { color: #57606a; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.tile .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bars { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 12px 14px; }
+.bar-row { display: grid; grid-template-columns: 170px 1fr 110px; gap: 10px; align-items: center; margin: 4px 0; }
+.bar-track { background: #eaeef2; border-radius: 4px; height: 14px; overflow: hidden; }
+.bar-fill { background: #cf222e; height: 100%; }
+.bar-fill.ok { background: #1a7f37; }
+.bar-count { text-align: right; font-variant-numeric: tabular-nums; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; background: #fff; width: 100%; border: 1px solid #d0d7de; }
+th, td { padding: 6px 10px; border-bottom: 1px solid #d0d7de; text-align: left; vertical-align: top; }
+th { background: #f0f2f5; font-weight: 600; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.status-pass { color: #1a7f37; font-weight: 600; }
+.status-other { color: #9a6700; font-weight: 600; }
+.none { color: #57606a; }
+@media (max-width: 600px) { .bar-row { grid-template-columns: 1fr 110px; } .bar-track { grid-column: 1 / -1; } }
+"""
+
+
+def h(value: Any) -> str:
+    """HTML-escape one value from the data (quotes included). None -> '-', bool -> yes/no."""
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return html.escape(str(value), quote=True)
+
+
+def _share(part: int, whole: int) -> str:
+    """Percentage as fixed 2-decimal text, computed in Decimal so it is the same text on every platform."""
+    if whole <= 0:
+        return "0.00"
+    return str((Decimal(part) * 100 / Decimal(whole)).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN))
+
+
+def _html_table(header: Sequence[str], rows: Iterable[Sequence[Any]], numeric: Sequence[int] = ()) -> list[str]:
+    """A table; every header and cell is escaped. `numeric` = column indexes to right-align."""
+    num = set(numeric)
+
+    def cls(i: int) -> str:
+        return ' class="num"' if i in num else ""
+    out = ['<div class="scroll"><table>',
+           "<thead><tr>" + "".join(f"<th{cls(i)}>{h(c)}</th>" for i, c in enumerate(header)) + "</tr></thead>",
+           "<tbody>"]
+    out += ["<tr>" + "".join(f"<td{cls(i)}>{h(v)}</td>" for i, v in enumerate(row)) + "</tr>" for row in rows]
+    out.append("</tbody></table></div>")
+    return out
+
+
+_NONE = '<p class="none">None.</p>'
+
+
+def render_summary_html(report: dict[str, Any]) -> str:
+    """summary.html: a self-contained page (inline CSS, no JavaScript, no external resources) built from the
+    same report dict as summary.md, with the same numbers. Pure: depends only on `report`, so it renders the
+    same bytes from the in-memory report or from the parsed report.json."""
+    run, totals = report["run"], report["totals"]
+    verdict = run["recon_status"]
+    keys = totals["keys"]
+    counts = report["key_status_counts"]
+
+    body = ["<main>", f'<section class="banner {"pass" if verdict == "PASS" else "fail"}">',
+            f"<h1>Reconciliation {h(verdict)}</h1>",
+            f"<p>run_id <code>{h(run['run_id'])}</code> &middot; run status {h(run['status'])}"
+            f" &middot; exit code {h(run['exit_code'])}</p>",
+            f"<p class=\"meta\">dataset: {h(run['dataset'])} &middot; business_key: {h(', '.join(run['business_key']))}"
+            f" &middot; attempt: {h(run['attempt'])} (forced: {h(bool(run['forced']))})</p>",
+            f"<p class=\"meta\">started_at: {h(run['started_at'])} &middot; finished_at: {h(run['finished_at'])}</p>",
+            "</section>"]
+
+    tiles = (("total keys", keys), ("MATCHED", counts.get("MATCHED", 0)),
+             ("non-matched", totals["non_matched_keys"]), ("field diffs", totals["field_diffs"]),
+             ("quarantined rows", totals["quarantine_rows"]),
+             ("unattributable rejects", totals["unattributable_rejects"]))
+    body.append('<section class="tiles">')
+    body += [f'<div class="tile"><div class="label">{h(label)}</div><div class="value">{h(v)}</div></div>'
+             for label, v in tiles]
+    body.append("</section>")
+
+    body += ["<h2>Key status breakdown</h2>", '<section class="bars">']
+    for status, n in _ordered(counts, KEY_STATUSES):
+        pct = _share(n, keys)
+        fill = "bar-fill ok" if status == "MATCHED" else "bar-fill"
+        body.append(f'<div class="bar-row"><span class="mono">{h(status)}</span>'
+                    f'<div class="bar-track"><div class="{fill}" style="width:{pct}%"></div></div>'
+                    f'<span class="bar-count">{h(n)} ({pct}%)</span></div>')
+    body += [f'<div class="bar-row"><strong>total</strong><span></span>'
+             f'<span class="bar-count"><strong>{h(keys)}</strong></span></div>', "</section>"]
+
+    body.append("<h2>Where the overall deltas come from</h2>")
+    for e in report["aggregate_explanation"]:
+        fmt = lambda v, e=e: _amount(v, e["unit"], e["scale"])  # noqa: E731
+        body.append(f"<h3>{h(e['metric'])}</h3>")
+        body.append(f"<p>delta <strong>{h(fmt(e['delta']))}</strong> = source-only {h(fmt(e['source_only']))}"
+                    f" - target-only {h(fmt(e['target_only']))} + both sides {h(fmt(e['both_sides']))}</p>")
+        rows = [(s, b["keys"], fmt(b["source_value"]), fmt(b["target_value"]), fmt(b["delta"]))
+                for s, b in _ordered(e["by_key_status"], KEY_STATUSES) if b["keys"]]
+        body += _html_table(("key_status", "keys", "source", "target", "delta"), rows, numeric=(1, 2, 3, 4)) \
+            if rows else [_NONE]
+    if not report["aggregate_explanation"]:
+        body.append(_NONE)
+
+    diffs = [(col, t, n) for col, by_type in sorted(report["field_diff_counts"].items())
+             for t, n in _ordered(by_type, DIFF_TYPES) if n]
+    body.append("<h2>Field differences</h2>")
+    body += _html_table(("column", "diff_type", "count"), diffs, numeric=(2,)) if diffs else [_NONE]
+
+    samples = report["mismatch_samples"]["keys"]
+    body.append(f"<h2>Non-matched keys (first {h(len(samples))} of {h(totals['non_matched_keys'])})</h2>")
+    body += _html_table(("record_key", "key_status", "differing columns", "source", "target"), [
+        (m["record_key"], m["key_status"], ", ".join(m["differing_columns"]),
+         _side_ref(m["source_state"], m["source_line_no"]), _side_ref(m["target_state"], m["target_line_no"]))
+        for m in samples]) if samples else [_NONE]
+
+    body += ["<h2>Checks</h2>", '<div class="scroll"><table>',
+             "<thead><tr><th>check</th><th>severity</th><th>status</th><th>expected</th><th>actual</th></tr></thead>",
+             "<tbody>"]
+    for c in report["checks"]:
+        css = "status-pass" if c["status"] == "PASS" else "status-other"
+        body.append(f"<tr><td>{h(c['check_name'])}</td><td>{h(c['severity'])}</td>"
+                    f'<td><span class="{css}">{h(c["status"])}</span></td>'
+                    f"<td>{h(c['expected'])}</td><td>{h(c['actual'])}</td></tr>")
+    body += ["</tbody></table></div>", "<h2>Warnings</h2>"]
+    warnings = [f"<li>{h(w['code'])} on {h(w['side'])}: {h(', '.join(w['columns']) or '(no columns)')}</li>"
+                for w in report["warnings"]]
+    body += ["<ul>", *warnings, "</ul>"] if warnings else [_NONE]
+    body += [f'<p class="meta">Full detail: {h(REPORT_JSON)}, {h(MISMATCHES_CSV)}, {h(FIELD_DIFFS_CSV)}, '
+             f"{h(QUARANTINE_CSV)}.</p>", "</main>"]
+
+    head = ["<!DOCTYPE html>", '<html lang="en">', "<head>", '<meta charset="utf-8">',
+            '<meta name="viewport" content="width=device-width, initial-scale=1">',
+            f"<title>Reconciliation {h(verdict)} - {h(run['run_id'])}</title>", "<style>", _CSS + "</style>",
+            "</head>", "<body>"]
+    return "\n".join([*head, *body, "</body>", "</html>", ""])

@@ -44,7 +44,7 @@ flowchart LR
         B -->|validate + dedupe| S -->|compare + aggregate + checks| G
     end
     REPO --> DB
-    G -->|report files| OUT["out/&lt;run_id&gt;/<br/>report.json, summary.md, mismatches.csv,<br/>field_diffs.csv, quarantine.csv, metrics.json, run.log"]
+    G -->|report files| OUT["out/&lt;run_id&gt;/<br/>report.json, summary.md, summary.html,<br/>mismatches.csv, field_diffs.csv, quarantine.csv, metrics.json, run.log"]
 ```
 
 - **Data tiers.** BRONZE lands every record verbatim (`raw_record`, one row per physical record, header
@@ -101,7 +101,7 @@ the current directory.
 | command | purpose | options |
 |---|---|---|
 | `run` | reconcile one source/target/reference set | `--source`, `--target`, `--reference`, `--config` (all required); `--db` (default `out/recon.db`); `--out` (default `out`); `--force` (new attempt even if this input set already SUCCEEDED); `--stale-after-minutes` (default 60); `--profile-memory` (tracemalloc peaks in `metrics.json`) |
-| `report` | rebuild the five report files of a SUCCEEDED run from the DB | `--run-id` (required); `--db`; `--out`. The config comes from the run row, so no `--config` |
+| `report` | rebuild the six report files of a SUCCEEDED run from the DB | `--run-id` (required); `--db`; `--out`. The config comes from the run row, so no `--config` |
 | `backfill` | one independent run per manifest line | `--manifest`, `--config` (required); `--db`; `--out`; `--stale-after-minutes`; `--profile-memory`. No `--force` |
 | `generate` | write a synthetic dataset plus its expected answers | `--n` (base orders, at least 16), `--seed`, `--name` (all required); `--generated-dir` (default `data/generated`); `--expected-dir` (default `data/expected`) |
 | `bench` | generate N orders, reconcile them K times into fresh temp DBs, record timings | `--n` (required); `--seed` (1); `--repeat` (3); `--config`; `--label`; `--doc` (default `docs/PERFORMANCE.md` — **appends a row there**; point it elsewhere for a trial) |
@@ -121,13 +121,14 @@ Every SUCCEEDED run writes `out/<run_id>/`:
 | file | what it is |
 |---|---|
 | `summary.md` | human one-pager. Line 1 is `# Reconciliation PASS` or `FAIL`, then inputs, rows per side, keys, field differences, aggregates, where the deltas come from, checks, warnings, the non-matched keys |
+| `summary.html` | the same one-pager as a self-contained page (inline CSS, no JavaScript, works offline): verdict banner, KPI tiles, key status bars, where the deltas come from, field differences, non-matched keys, checks and warnings. Open it in any browser |
 | `report.json` | the machine-readable report ([docs/REPORT_SCHEMA.md](docs/REPORT_SCHEMA.md)) |
 | `mismatches.csv` | one row per non-MATCHED key, source and target values side by side |
 | `field_diffs.csv` | one row per differing field |
 | `quarantine.csv` | every excluded record: side, file, line_no, reason_code, detail, raw text |
 | `metrics.json`, `run.log` | stage timings, row counts, memory, logs. Not deterministic, never part of the report |
 
-Every CSV starts with `run_id`. The five report files are published together (staging dir, then rename), so
+Every CSV starts with `run_id`. The six report files are published together (staging dir, then rename), so
 a crash never leaves half a set. FAILED and REJECTED runs get no report files; read `failure_reason` and
 `failure_detail` on their `run` row.
 

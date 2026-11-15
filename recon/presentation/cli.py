@@ -171,7 +171,7 @@ def _cmd_backfill(args: argparse.Namespace) -> int:
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
-    """Rewrite the five report files of a SUCCEEDED run; run.log and metrics.json are kept."""
+    """Rewrite the six report files of a SUCCEEDED run; run.log and metrics.json are kept."""
     path = _publish_report(args.db, args.out, args.run_id)
     if path is None:
         return pipeline.EXIT_ERROR

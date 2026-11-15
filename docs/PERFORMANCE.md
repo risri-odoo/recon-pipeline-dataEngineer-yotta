@@ -9,7 +9,9 @@ threads, reported clock 1.7 GHz), Python 3.13.7, SQLite 3.50.4. Nothing is extra
 then reconciles it K times, each time into a fresh SQLite DB, and adds one row to the table below.
 
 - **Stage seconds** (`batch_checks`, `bronze`, `silver`, `gold`) come from the pipeline's own stage timer
-  (`time.perf_counter`, the figures that go to `metrics.json`). `report s` = writing the five report files.
+  (`time.perf_counter`, the figures that go to `metrics.json`). `report s` = writing the report files.
+  Every row recorded so far was measured before `summary.html` existed, so it covers the five original
+  files only; rows added after that change also include writing `summary.html`.
   `total s` = pipeline + report files, in-process wall time (no interpreter start-up, no data generation).
   All are **medians over the K runs**; `total min-max s` shows the spread.
 - **CPU s** = CPU time of the process over the same span (`time.process_time`, median). It is much less

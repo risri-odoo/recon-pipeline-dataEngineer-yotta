@@ -5,6 +5,7 @@ import io
 import json
 import re
 import shutil
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -12,10 +13,12 @@ import pytest
 from recon.presentation import report_writer
 from recon.presentation.cli import main
 from recon.presentation.report_writer import (FIELD_DIFFS_CSV, MISMATCHES_CSV, QUARANTINE_CSV, REPORT_FILES,
-                                              REPORT_JSON, SUMMARY_MD, md_cell, recover_run_dir, render_summary)
+                                              REPORT_JSON, SUMMARY_HTML, SUMMARY_MD, md_cell, recover_run_dir,
+                                              render_summary, render_summary_html)
 from recon.repository import gold_repo, silver_repo
 from recon.repository.db import connect
 from recon.service import pipeline, report
+from recon.service.normalize import format_minor
 from tests.silver_helpers import REF_HEADER, SRC_HEADER, TGT_HEADER, order_row
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -459,3 +462,154 @@ def test_render_summary_is_pure(sample_run):
     out, run_id = sample_run
     doc = json.loads((out / run_id / REPORT_JSON).read_text(encoding="utf-8"))
     assert render_summary(doc) == (out / run_id / SUMMARY_MD).read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- summary.html
+
+
+class _Page(HTMLParser):
+    """Collects tags, attributes, tile label -> value, bar-row texts, the h1 and table rows (cell texts)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tags, self.attrs, self.tiles, self.bars, self.tables = [], [], {}, [], []
+        self.h1, self._label = "", ""
+        self._classes, self._text, self._row, self._cell = [], [], None, None
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.append(tag)
+        self.attrs += attrs
+        cls = dict(attrs).get("class") or ""
+        self._classes.append(cls)
+        if cls in ("label", "value", "bar-row") or tag == "h1":
+            self._text = []
+        if tag == "table":
+            self.tables.append([])
+        elif tag == "tr":
+            self._row = []
+        elif tag in ("td", "th"):
+            self._cell = []
+
+    def handle_endtag(self, tag):
+        cls = self._classes.pop() if self._classes else ""
+        text = "".join(self._text)
+        if cls == "label":
+            self._label = text
+        elif cls == "value":
+            self.tiles[self._label] = int(text)
+        elif cls == "bar-row":
+            self.bars.append(" ".join(" ".join(self._text).split()))
+        elif tag == "h1":
+            self.h1 = text
+        if tag in ("td", "th"):
+            self._row.append("".join(self._cell))
+            self._cell = None
+        elif tag == "tr":
+            self.tables[-1].append(self._row)
+
+    def handle_data(self, data):
+        self._text.append(data)
+        if self._cell is not None:
+            self._cell.append(data)
+
+
+def parse_html(text: str) -> _Page:
+    page = _Page()
+    page.feed(text)
+    page.close()
+    return page
+
+
+def test_summary_html_is_written_self_contained_and_parses(sample_run):
+    out, run_id = sample_run
+    raw = (out / run_id / SUMMARY_HTML).read_bytes()
+    text = raw.decode("utf-8")
+    assert b"\r" not in raw and text.startswith("<!DOCTYPE html>\n") and text.endswith("</html>\n")
+    page = parse_html(text)
+    assert page.h1 == "Reconciliation FAIL"
+    assert "style" in page.tags and "script" not in page.tags and "link" not in page.tags
+    assert not [v for k, v in page.attrs if k in ("src", "href")]  # no external resources at all
+    assert "http" not in text and "@import" not in text and "url(" not in text
+    assert f"<code>{run_id}</code>" in text and "run status SUCCEEDED" in text and "exit code 1" in text
+
+
+def test_summary_html_numbers_match_report_json(sample_run):
+    out, run_id = sample_run
+    doc = json.loads((out / run_id / REPORT_JSON).read_text(encoding="utf-8"))
+    page = parse_html((out / run_id / SUMMARY_HTML).read_text(encoding="utf-8"))
+    totals, counts = doc["totals"], doc["key_status_counts"]
+
+    assert page.tiles == {"total keys": totals["keys"], "MATCHED": counts["MATCHED"],
+                          "non-matched": totals["non_matched_keys"], "field diffs": totals["field_diffs"],
+                          "quarantined rows": totals["quarantine_rows"],
+                          "unattributable rejects": totals["unattributable_rejects"]}
+    bars = {b.split()[0]: int(b.split()[1]) for b in page.bars if b.split()[0] != "total"}
+    assert bars == counts and f"total {totals['keys']}" in page.bars
+    assert "MATCHED 50 (81.97%)" in page.bars  # width = share of keys: 50 / 61
+
+    explanation_rows = sorted(r for t in page.tables if t[0][0] == "key_status" for r in t[1:])
+    expected = sorted([s, str(b["keys"]), *(format_minor(b[k], e["scale"]) if e["unit"] == "MINOR_UNITS"
+                                            else str(b[k]) for k in ("source_value", "target_value", "delta"))]
+                      for e in doc["aggregate_explanation"] for s, b in e["by_key_status"].items() if b["keys"])
+    assert explanation_rows == expected
+    [diffs] = [t for t in page.tables if t[0][0] == "column"]
+    assert sorted((r[0], r[1], int(r[2])) for r in diffs[1:]) == sorted(
+        (col, t, n) for col, by_type in doc["field_diff_counts"].items() for t, n in by_type.items() if n)
+    [samples] = [t for t in page.tables if t[0][0] == "record_key"]
+    assert [r[:2] for r in samples[1:]] == [[m["record_key"], m["key_status"]]
+                                           for m in doc["mismatch_samples"]["keys"]]
+    [checks] = [t for t in page.tables if t[0][0] == "check"]
+    assert [r[0] for r in checks[1:]] == [c["check_name"] for c in doc["checks"]]
+
+
+def test_summary_html_tables_show_the_same_rows_as_summary_md(sample_run):
+    out, run_id = sample_run
+    md = (out / run_id / SUMMARY_MD).read_text(encoding="utf-8")
+    md_rows = {tuple(c.strip() for c in line.strip().strip("|").split(" | ")) for line in md.splitlines()
+               if line.startswith("| ")}
+    page = parse_html((out / run_id / SUMMARY_HTML).read_text(encoding="utf-8"))
+    html_rows = [tuple(r) for t in page.tables for r in t[1:]]
+    assert len(html_rows) > 20 and [r for r in html_rows if r not in md_rows] == []
+
+
+def test_summary_html_escapes_every_value_from_the_data(sample_run):
+    out, run_id = sample_run
+    doc = json.loads((out / run_id / REPORT_JSON).read_text(encoding="utf-8"))
+    evil = '<script>alert("x")</script>&'
+    doc["run"]["dataset"] = evil
+    doc["mismatch_samples"]["keys"][0]["record_key"] = evil
+    doc["field_diff_counts"][evil] = {"VALUE_MISMATCH": 1}
+    doc["warnings"].append({"code": "SCHEMA_EXTRA_COLUMN", "side": "TARGET", "columns": [evil]})
+    doc["checks"][0]["status"] = evil
+    text = render_summary_html(doc)
+
+    assert "<script>" not in text and "</script>" not in text
+    assert "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;&amp;" in text
+    page = parse_html(text)
+    assert "script" not in page.tags
+    assert evil in {c for t in page.tables for r in t for c in r}  # round-trips as text, not markup
+
+
+def test_summary_html_regeneration_is_byte_identical(sample_run, capsys):
+    out, run_id = sample_run
+    before = (out / run_id / SUMMARY_HTML).read_bytes()
+    code, _, _ = run_cli(report_cli(out, run_id), capsys)
+    assert code == 0 and (out / run_id / SUMMARY_HTML).read_bytes() == before
+    doc = json.loads((out / run_id / REPORT_JSON).read_text(encoding="utf-8"))
+    assert render_summary_html(doc).encode("utf-8") == before  # pure: same bytes from the parsed report.json
+
+
+def test_summary_html_pass(tmp_path, capsys):
+    folder = tmp_path / "in"
+    folder.mkdir()
+    for name, header in (("source.csv", SRC_HEADER), ("target.csv", TGT_HEADER)):
+        (folder / name).write_bytes(f"{header}\n{order_row('O1')}\n".encode("utf-8"))
+    (folder / "customers.csv").write_bytes(f"{REF_HEADER}\nC1,Alice\n".encode("utf-8"))
+    out = tmp_path / "out"
+    code, fields, _ = run_cli(run_args(folder, out), capsys)
+    assert code == 0
+    text = (out / fields["run_id"] / SUMMARY_HTML).read_text(encoding="utf-8")
+    page = parse_html(text)
+    assert page.h1 == "Reconciliation PASS" and 'class="banner pass"' in text
+    assert page.tiles["MATCHED"] == 1 and page.tiles["non-matched"] == 0
+    assert "MATCHED 1 (100.00%)" in page.bars and "CONFLICT 0 (0.00%)" in page.bars
