@@ -1,0 +1,148 @@
+{
+  "bucket_sizes": {
+    "amount_mismatch": 1,
+    "cosmetic": 1,
+    "extra_in_target": 1,
+    "missing_in_target": 1,
+    "null_both": 1,
+    "null_one_side": 1,
+    "src_bad_type": 1,
+    "src_conflict": 1,
+    "src_exact_dup": 1,
+    "src_invalid_ref": 1,
+    "src_malformed": 1,
+    "src_missing_required": 1,
+    "src_out_of_order": 1,
+    "target_stale": 1,
+    "tgt_bad_type": 1,
+    "tgt_exact_dup": 1,
+    "within_tolerance": 1
+  },
+  "field_diff_counts": [
+    {
+      "count": 1,
+      "diff_type": "VALUE_MISMATCH",
+      "field_name": "amount"
+    },
+    {
+      "count": 1,
+      "diff_type": "NULL_MISMATCH",
+      "field_name": "discount"
+    },
+    {
+      "count": 1,
+      "diff_type": "TARGET_STALE",
+      "field_name": "status"
+    }
+  ],
+  "generator_version": 1,
+  "key_status_counts": {
+    "CONFLICT": 1,
+    "EXTRA_IN_TARGET": 2,
+    "MATCHED": 50,
+    "MISMATCHED": 3,
+    "MISSING_IN_TARGET": 1,
+    "SOURCE_REJECTED": 3,
+    "TARGET_REJECTED": 1
+  },
+  "n": 60,
+  "recon_status": "FAIL",
+  "scenario_keys": {
+    "amount_mismatch": [
+      "ORD-000022"
+    ],
+    "cosmetic": [
+      "ORD-000027"
+    ],
+    "extra_in_target": [
+      "ORD-000061"
+    ],
+    "missing_in_target": [
+      "ORD-000060"
+    ],
+    "null_both": [
+      "ORD-000048"
+    ],
+    "null_one_side": [
+      "ORD-000043"
+    ],
+    "src_bad_type": [
+      "ORD-000007"
+    ],
+    "src_conflict": [
+      "ORD-000018"
+    ],
+    "src_exact_dup": [
+      "ORD-000056"
+    ],
+    "src_invalid_ref": [
+      "ORD-000011"
+    ],
+    "src_malformed": [
+      "ORD-000025"
+    ],
+    "src_missing_required": [
+      "ORD-000045"
+    ],
+    "src_out_of_order": [
+      "ORD-000016"
+    ],
+    "target_stale": [
+      "ORD-000052"
+    ],
+    "tgt_bad_type": [
+      "ORD-000003"
+    ],
+    "tgt_exact_dup": [
+      "ORD-000031"
+    ],
+    "within_tolerance": [
+      "ORD-000051"
+    ]
+  },
+  "seed": 42,
+  "sides": {
+    "REFERENCE": {
+      "accepted": 1,
+      "rows_read": 1
+    },
+    "SOURCE": {
+      "accepted": 55,
+      "conflicting_rows": 2,
+      "duplicate_exact": 1,
+      "rejected_by_reason": {
+        "BAD_ENUM": 0,
+        "BAD_FORMAT": 0,
+        "BAD_TYPE": 1,
+        "INVALID_REFERENCE": 1,
+        "MALFORMED_ROW": 1,
+        "MISSING_REQUIRED": 1,
+        "OUT_OF_RANGE": 0
+      },
+      "rows_read": 63,
+      "sum_amount": "24369.22",
+      "sum_discount": "1108.95",
+      "superseded": 1
+    },
+    "TARGET": {
+      "accepted": 59,
+      "conflicting_rows": 0,
+      "duplicate_exact": 1,
+      "rejected_by_reason": {
+        "BAD_ENUM": 0,
+        "BAD_FORMAT": 0,
+        "BAD_TYPE": 1,
+        "INVALID_REFERENCE": 0,
+        "MALFORMED_ROW": 0,
+        "MISSING_REQUIRED": 0,
+        "OUT_OF_RANGE": 0
+      },
+      "rows_read": 61,
+      "sum_amount": "26285.90",
+      "sum_discount": "1215.18",
+      "superseded": 0
+    }
+  },
+  "total_keys": 61,
+  "unattributable_rejects": 1
+}
