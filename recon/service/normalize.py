@@ -107,14 +107,30 @@ def validate_row(
             value = values[spec.name]
             if spec.reference and value is not None and value not in reference_ids:
                 failures.append(Failure(spec.name, INVALID_REFERENCE, f"{value!r} not found in reference"))
-    key = values.get(config.business_key)
     version = values.get(config.version_field)
     return RowResult(
         values=values,
         failures=tuple(failures),
-        business_key=key if isinstance(key, str) else None,
+        business_key=make_business_key(config, values),
         version=version if isinstance(version, str) else None,
     )
+
+
+KEY_SEPARATOR = "|"
+
+
+def make_business_key(config: Config, values: Mapping[str, object]) -> str | None:
+    """The canonical business key text, or None if any key component did not parse.
+
+    A single-field key is the normalized value unchanged. A composite key joins its components with '|';
+    inside each component '\\' becomes '\\\\' and '|' becomes '\\|', so different tuples never share a key.
+    """
+    parts = [values.get(name) for name in config.business_key]
+    if not all(isinstance(p, str) for p in parts):
+        return None
+    if len(parts) == 1:
+        return parts[0]
+    return KEY_SEPARATOR.join(p.replace("\\", "\\\\").replace(KEY_SEPARATOR, "\\" + KEY_SEPARATOR) for p in parts)
 
 
 def parse_money(text: str, scale: int) -> int:

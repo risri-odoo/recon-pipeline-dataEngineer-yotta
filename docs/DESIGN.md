@@ -92,6 +92,8 @@ REFERENCE (customer list): `customer_id` (str, required, trim + upper-case, key)
 
 The mapping is held in a single config file: the logical schema plus `columns.source` and `columns.target` maps. Header names are matched after trim + lower-case.
 
+**Business key.** `business_key` in the config is one field (orders: `order_id`) or a list of fields for a composite key. A composite key is its normalized components joined with `|`, with `\` and `|` inside a component escaped as `\\` and `\|`; it is stored in the `order_id` columns below.
+
 **File names.** Input file names are arbitrary: the SOURCE, TARGET and REFERENCE files are passed as CLI paths, and only their headers matter. The synthetic generator (`recon generate`) writes `source.csv`, `target.csv` and `customers.csv` into `data/generated/<name>/`; the committed sample uses the same names in `data/sample/`.
 
 ---
@@ -146,7 +148,7 @@ PK `(run_id, side, line_no)`. Records are landed verbatim and nothing is parsed 
 | column | type | notes |
 |---|---|---|
 | run_id, side | TEXT | PK part. side ∈ SOURCE or TARGET |
-| order_id | TEXT | PK part |
+| order_id | TEXT | PK part. The business key (joined, for a composite key: section 2.2) |
 | customer_id | TEXT NOT NULL | |
 | order_ts | TEXT NOT NULL | UTC ISO |
 | status | TEXT NOT NULL | |

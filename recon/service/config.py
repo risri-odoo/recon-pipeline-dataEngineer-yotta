@@ -65,7 +65,7 @@ class AggregateSpec:
 class Config:
     dataset: str
     fields: tuple[FieldSpec, ...]
-    business_key: str
+    business_key: tuple[str, ...]  # one field, or several for a composite key (config: string or list)
     version_field: str
     compare_fields: tuple[str, ...]
     source_columns: tuple[tuple[str, str], ...]
@@ -121,18 +121,16 @@ def parse_config(raw: Any) -> Config:
             raise ConfigError(f"duplicate field name {spec.name!r}")
         by_name[spec.name] = spec
 
-    business_key = _known(raw["business_key"], by_name, "business_key")
-    if not by_name[business_key].required:
-        raise ConfigError(f"business_key field {business_key!r} must be required")
     version_field = _known(raw["version_field"], by_name, "version_field")
     if by_name[version_field].type != "timestamp":
         raise ConfigError(f"version_field {version_field!r} must be of type timestamp")
     if not by_name[version_field].required:
         raise ConfigError(f"version_field {version_field!r} must be required")
+    business_key = _parse_business_key(raw["business_key"], by_name, version_field)
 
     compare_fields = tuple(_known(n, by_name, "compare_fields") for n in _list(raw["compare_fields"], "compare_fields"))
     for name in compare_fields:
-        if name in (business_key, version_field):
+        if name in business_key or name == version_field:
             raise ConfigError(f"compare_fields must not contain key/version field {name!r}")
     _no_duplicates(compare_fields, "compare_fields")
 
@@ -212,6 +210,24 @@ def _parse_field(raw: Any, index: int, canonical: dict[str, Any]) -> FieldSpec:
             raise ConfigError(f"{where}: tolerance must be >= 0")
         return FieldSpec(name, ftype, required, scale=scale, min_minor=min_minor, tolerance_minor=tolerance)
     return FieldSpec(name, ftype, required)
+
+
+def _parse_business_key(raw: Any, by_name: dict[str, FieldSpec], version_field: str) -> tuple[str, ...]:
+    """A field name, or a non-empty list of distinct field names (composite key)."""
+    names = [raw] if isinstance(raw, str) else _list(raw, "business_key")
+    if not names:
+        raise ConfigError("business_key list must not be empty")
+    for name in names:
+        _known(name, by_name, "business_key")
+        spec = by_name[name]
+        if not spec.required:
+            raise ConfigError(f"business_key field {name!r} must be required")
+        if spec.type == "decimal":
+            raise ConfigError(f"business_key field {name!r} must not be of type decimal")
+        if name == version_field:
+            raise ConfigError(f"business_key must not contain the version_field {name!r}")
+    _no_duplicates(names, "business_key")
+    return tuple(names)
 
 
 def _parse_column_map(raw: Any, logical: list[str], where: str) -> tuple[tuple[str, str], ...]:

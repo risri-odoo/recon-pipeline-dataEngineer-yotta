@@ -12,7 +12,7 @@ def field(raw, name):
 
 
 def test_shipped_config_loads(config):
-    assert config.business_key == "order_id"
+    assert config.business_key == ("order_id",)
     assert config.version_field == "updated_at"
     assert [f.name for f in config.fields] == [
         "order_id", "customer_id", "order_ts", "status", "amount", "currency", "discount", "updated_at"]
