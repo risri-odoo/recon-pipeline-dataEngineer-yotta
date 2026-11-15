@@ -232,58 +232,74 @@ def _group_expr(grouping: Grouping, alias: str) -> str:
     return f"COALESCE(CAST({alias}.{_ident(grouping.column)} AS TEXT), '{NULL_GROUP_VALUE}')"
 
 
-def aggregate_sql(measure: Measure, grouping: Grouping) -> str:
-    """One aggregate_result statement: SQL SUM per side, and the delta rebuilt by walking key_result."""
-    m_c, m_s, m_t = (_measure_expr(measure, a) for a in ("c", "s", "t"))
-    g_c, g_s, g_t = (_group_expr(grouping, a) for a in ("c", "s", "t"))
-    always_all = f"\n    UNION SELECT '{ALL_GROUP_VALUE}'" if grouping.column is None else ""
-    return f"""
-INSERT INTO aggregate_result ({', '.join(AGGREGATE_COLUMNS)})
-WITH actual AS (
-    SELECT {g_c} AS group_value,
-           COALESCE(SUM(CASE WHEN c.side = 'SOURCE' THEN {m_c} END), 0) AS source_value,
-           COALESCE(SUM(CASE WHEN c.side = 'TARGET' THEN {m_c} END), 0) AS target_value
+def aggregates_sql(measures: Sequence[Measure], groupings: Sequence[Grouping]) -> str:
+    """Every aggregate_result row of a run in ONE statement (docs/PERFORMANCE.md).
+
+    - `rows`: the clean rows with every grouping value g<i> and raw measure value m<j> (source/target SUMs).
+      SQLite inlines it, so clean_record is read once per grouping (an index range scan);
+    - `walk`: key_result joined to its clean rows, contributions w<j> = +source / -target, NULL as 0
+      (explained_delta, rebuilt from key_result independently of the SUMs, DESIGN 4.6). It is referenced
+      once per grouping, so SQLite materializes it once: the expensive join runs a single time.
+    Per grouping i: actual_<i> and explained_<i> group those, groups_<i> is the union of their group values
+    (plus '*' for ALL); then one SELECT per (grouping, measure), joined by UNION ALL.
+    """
+    if not measures or not groupings:
+        raise ValueError("at least one measure and one grouping are required")
+    gi, mj = range(len(groupings)), range(len(measures))
+    rows_cols = ", ".join([f"{_group_expr(g, 'c')} AS g{i}" for i, g in zip(gi, groupings)]
+                          + [f"{_measure_expr(m, 'c')} AS m{j}" for j, m in zip(mj, measures)])
+
+    def walk_cols(alias: str, sign: str) -> str:
+        return ", ".join([f"{_group_expr(g, alias)} AS g{i}" for i, g in zip(gi, groupings)]
+                         + [f"{sign}COALESCE({_measure_expr(m, alias)}, 0) AS w{j}" for j, m in zip(mj, measures)])
+
+    ctes = [f"""rows AS (
+    SELECT c.side, {rows_cols}
     FROM clean_record AS c
     WHERE c.run_id = :run_id
-    GROUP BY 1
-),
-walk AS (
-    SELECT {g_s} AS group_value, COALESCE({m_s}, 0) AS contribution
+)""", f"""walk AS (
+    SELECT {walk_cols('s', '')}
     FROM key_result AS k
     JOIN clean_record AS s ON s.run_id = k.run_id AND s.side = 'SOURCE' AND s.order_id = k.order_id
     WHERE k.run_id = :run_id
     UNION ALL
-    SELECT {g_t}, -COALESCE({m_t}, 0)
+    SELECT {walk_cols('t', '-')}
     FROM key_result AS k
     JOIN clean_record AS t ON t.run_id = k.run_id AND t.side = 'TARGET' AND t.order_id = k.order_id
     WHERE k.run_id = :run_id
-),
-explained AS (
-    SELECT group_value, SUM(contribution) AS explained_delta FROM walk GROUP BY group_value
-),
-groups AS (
-    SELECT group_value FROM actual
-    UNION SELECT group_value FROM explained{always_all}
-)
-SELECT :run_id, :metric, :group_by, g.group_value,
-       COALESCE(a.source_value, 0), COALESCE(a.target_value, 0),
-       COALESCE(a.source_value, 0) - COALESCE(a.target_value, 0),
-       COALESCE(e.explained_delta, 0),
-       COALESCE(a.source_value, 0) - COALESCE(a.target_value, 0) - COALESCE(e.explained_delta, 0)
-FROM groups AS g
-LEFT JOIN actual AS a ON a.group_value = g.group_value
-LEFT JOIN explained AS e ON e.group_value = g.group_value
-"""
+)"""]
+    selects = []
+    for i, grouping in zip(gi, groupings):
+        sums = ", ".join(f"COALESCE(SUM(CASE WHEN side = 'SOURCE' THEN m{j} END), 0) AS s{j}, "
+                         f"COALESCE(SUM(CASE WHEN side = 'TARGET' THEN m{j} END), 0) AS t{j}" for j in mj)
+        explained = ", ".join(f"SUM(w{j}) AS e{j}" for j in mj)
+        always_all = f" UNION SELECT '{ALL_GROUP_VALUE}'" if grouping.column is None else ""
+        ctes += [f"actual_{i} AS (SELECT g{i} AS group_value, {sums} FROM rows GROUP BY 1)",
+                 f"explained_{i} AS (SELECT g{i} AS group_value, {explained} FROM walk GROUP BY 1)",
+                 f"groups_{i} AS (SELECT group_value FROM actual_{i}"
+                 f" UNION SELECT group_value FROM explained_{i}{always_all})"]
+        for j in mj:
+            src, tgt, exp = f"COALESCE(a.s{j}, 0)", f"COALESCE(a.t{j}, 0)", f"COALESCE(e.e{j}, 0)"
+            selects.append(f"""SELECT :run_id, :metric_{j}, :group_by_{i}, g.group_value,
+       {src}, {tgt}, {src} - {tgt}, {exp}, {src} - {tgt} - {exp}
+FROM groups_{i} AS g
+LEFT JOIN actual_{i} AS a ON a.group_value = g.group_value
+LEFT JOIN explained_{i} AS e ON e.group_value = g.group_value""")
+    return (f"INSERT INTO aggregate_result ({', '.join(AGGREGATE_COLUMNS)})\nWITH "
+            + ",\n".join(ctes) + "\n" + "\nUNION ALL\n".join(selects) + "\n")
+
+
+def aggregates_params(run_id: str, measures: Sequence[Measure], groupings: Sequence[Grouping]) -> dict[str, Any]:
+    params: dict[str, Any] = {"run_id": run_id}
+    params.update({f"metric_{j}": _label(m.metric) for j, m in enumerate(measures)})
+    params.update({f"group_by_{i}": _label(g.group_by) for i, g in enumerate(groupings)})
+    return params
 
 
 def insert_aggregates(conn: sqlite3.Connection, run_id: str, measures: Sequence[Measure],
                       groupings: Sequence[Grouping]) -> None:
-    """One set-based statement per (measure, grouping)."""
-    for measure in measures:
-        for grouping in groupings:
-            conn.execute(aggregate_sql(measure, grouping),
-                         {"run_id": run_id, "metric": _label(measure.metric),
-                          "group_by": _label(grouping.group_by)})
+    """All (measure, grouping) rows in one set-based statement (the clean rows and the walk are read once)."""
+    conn.execute(aggregates_sql(measures, groupings), aggregates_params(run_id, measures, groupings))
 
 
 def aggregate_breakdown(conn: sqlite3.Connection, run_id: str, measure: Measure) -> dict[str, int]:

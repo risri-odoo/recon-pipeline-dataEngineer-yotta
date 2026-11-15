@@ -19,6 +19,11 @@ def connect(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def explain_query_plan(conn: sqlite3.Connection, sql: str) -> list[str]:
+    """The EXPLAIN QUERY PLAN detail lines of `sql`, in plan order (dev tooling: tools/explain_gold.py)."""
+    return [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + sql).fetchall()]
+
+
 def is_integer_overflow(exc: BaseException) -> bool:
     """True for SQLite's 'integer overflow' (raised by SUM() when a 64-bit integer total overflows)."""
     return isinstance(exc, sqlite3.OperationalError) and "integer overflow" in str(exc)

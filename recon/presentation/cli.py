@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from recon.generator.generate import generate, write_dataset
+from recon.presentation import bench
 from recon.presentation.report_writer import REPORT_JSON, write_metrics, write_report
 from recon.service import backfill, pipeline, report
 from recon.service.config import ConfigError
@@ -48,6 +49,18 @@ def build_parser() -> argparse.ArgumentParser:
     rep.add_argument("--out", type=Path, default=pipeline.DEFAULT_OUT,
                      help="report files go to <out>/<run_id>/ (default: out)")
     rep.set_defaults(func=_cmd_report)
+
+    bench = sub.add_parser("bench", help="Generate N orders, reconcile them into a fresh DB and record timings.")
+    bench.add_argument("--n", type=int, required=True, help="number of base orders to generate")
+    bench.add_argument("--seed", type=int, default=1, help="random seed (default: 1)")
+    bench.add_argument("--config", type=Path, default=Path("config/orders_recon.json"),
+                       help="reconciliation config JSON (default: config/orders_recon.json)")
+    bench.add_argument("--doc", type=Path, default=Path("docs/PERFORMANCE.md"),
+                       help="results table to append to (default: docs/PERFORMANCE.md)")
+    bench.add_argument("--label", default="run", help="row label, e.g. baseline or after (default: run)")
+    bench.add_argument("--repeat", type=int, default=3,
+                       help="timed runs; stage and total seconds are medians (default: 3)")
+    bench.set_defaults(func=_cmd_bench)
     return parser
 
 
@@ -160,6 +173,18 @@ def _cmd_report(args: argparse.Namespace) -> int:
     if path is None:
         return pipeline.EXIT_ERROR
     print(f"run_id={args.run_id} report={path.as_posix()}")
+    return 0
+
+
+def _cmd_bench(args: argparse.Namespace) -> int:
+    try:
+        result = bench.run_bench(args.n, args.seed, args.config, args.label, args.repeat)
+    except (bench.BenchError, ConfigError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return pipeline.EXIT_ERROR
+    bench.append_result(args.doc, result)
+    print(bench.format_row(result), end="")
+    print(f"appended to {args.doc.as_posix()}")
     return 0
 
 
