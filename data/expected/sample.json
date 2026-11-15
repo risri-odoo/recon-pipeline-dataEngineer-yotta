@@ -49,10 +49,10 @@
   "recon_status": "FAIL",
   "scenario_keys": {
     "amount_mismatch": [
-      "ORD-000022"
+      "ORD-000016"
     ],
     "cosmetic": [
-      "ORD-000027"
+      "ORD-000011"
     ],
     "extra_in_target": [
       "ORD-000061"
@@ -61,50 +61,50 @@
       "ORD-000060"
     ],
     "null_both": [
-      "ORD-000048"
+      "ORD-000012"
     ],
     "null_one_side": [
-      "ORD-000043"
+      "ORD-000058"
     ],
     "src_bad_type": [
-      "ORD-000007"
+      "ORD-000053"
     ],
     "src_conflict": [
-      "ORD-000018"
+      "ORD-000054"
     ],
     "src_exact_dup": [
-      "ORD-000056"
+      "ORD-000027"
     ],
     "src_invalid_ref": [
-      "ORD-000011"
+      "ORD-000048"
     ],
     "src_malformed": [
-      "ORD-000025"
+      "ORD-000043"
     ],
     "src_missing_required": [
-      "ORD-000045"
+      "ORD-000022"
     ],
     "src_out_of_order": [
-      "ORD-000016"
+      "ORD-000002"
     ],
     "target_stale": [
       "ORD-000052"
     ],
     "tgt_bad_type": [
-      "ORD-000003"
+      "ORD-000059"
     ],
     "tgt_exact_dup": [
-      "ORD-000031"
+      "ORD-000018"
     ],
     "within_tolerance": [
-      "ORD-000051"
+      "ORD-000056"
     ]
   },
   "seed": 42,
   "sides": {
     "REFERENCE": {
-      "accepted": 1,
-      "rows_read": 1
+      "accepted": 5,
+      "rows_read": 5
     },
     "SOURCE": {
       "accepted": 55,
@@ -120,8 +120,8 @@
         "OUT_OF_RANGE": 0
       },
       "rows_read": 63,
-      "sum_amount": "24369.22",
-      "sum_discount": "1108.95",
+      "sum_amount": "25817.09",
+      "sum_discount": "1263.26",
       "superseded": 1
     },
     "TARGET": {
@@ -138,8 +138,8 @@
         "OUT_OF_RANGE": 0
       },
       "rows_read": 61,
-      "sum_amount": "26285.90",
-      "sum_discount": "1215.18",
+      "sum_amount": "29260.37",
+      "sum_discount": "1437.53",
       "superseded": 0
     }
   },

@@ -14,9 +14,9 @@ section 4 comes from the reviewed catalogue. Do not rename or add any of them wi
 ```mermaid
 flowchart LR
     subgraph IN[Inputs]
-        S[orders.csv<br/>SOURCE]
-        T[warehouse orders<br/>TARGET]
-        R[customers.csv<br/>REFERENCE]
+        S[source file<br/>SOURCE]
+        T[target file<br/>TARGET]
+        R[reference file<br/>REFERENCE]
         C[config]
     end
     subgraph B[BRONZE]
@@ -76,7 +76,7 @@ Aggregates: row count, SUM(amount), SUM(discount). Each is computed overall, gro
 
 ### 2.2 Physical column mapping
 
-| logical | SOURCE (`orders.csv`) | TARGET (warehouse load) |
+| logical | SOURCE (OLTP export) | TARGET (warehouse load) |
 |---|---|---|
 | order_id | order_id | order_id |
 | customer_id | customer_id | cust_id |
@@ -87,9 +87,11 @@ Aggregates: row count, SUM(amount), SUM(discount). Each is computed overall, gro
 | discount | discount | discount_amount |
 | updated_at | updated_at | last_modified |
 
-REFERENCE (`customers.csv`): `customer_id` (str, required, trim + upper-case, key) and `customer_name` (str, informational only).
+REFERENCE (customer list): `customer_id` (str, required, trim + upper-case, key) and `customer_name` (str, informational only).
 
 The mapping is held in a single config file: the logical schema plus `columns.source` and `columns.target` maps. Header names are matched after trim + lower-case.
+
+**File names.** Input file names are arbitrary: the SOURCE, TARGET and REFERENCE files are passed as CLI paths, and only their headers matter. The synthetic generator (`recon generate`) writes `source.csv`, `target.csv` and `customers.csv` into `data/generated/<name>/`; the committed sample uses the same names in `data/sample/`.
 
 ---
 

@@ -60,8 +60,7 @@ def test_committed_sample_matches_generator():
 
 @pytest.mark.parametrize("n, seed", [(60, 42), (2000, 3)])
 def test_buckets_are_disjoint_and_non_empty(n, seed):
-    exp = gen.generate(n, seed).expected
-    buckets = exp["scenario_keys"]
+    buckets = gen.generate(n, seed).buckets
     assert set(buckets) == {name for name, _ in gen.SCENARIOS}
     seen: set[str] = set()
     for name, keys in buckets.items():
@@ -80,11 +79,25 @@ def test_bucket_sizes_follow_rates():
 def test_extra_keys_are_new_and_base_buckets_are_base_keys():
     ds = gen.generate(300, 5)
     source_keys = {row[0] for row in _data_rows(ds.source_csv)}
-    buckets = ds.expected["scenario_keys"]
+    buckets = ds.buckets
     assert source_keys.isdisjoint(buckets["extra_in_target"])
     for name, keys in buckets.items():
         if name != "extra_in_target":
             assert set(keys) <= source_keys, name
+
+
+@pytest.mark.parametrize("n, has_lists", [(gen.SMALL_N_KEY_LISTS, True), (gen.SMALL_N_KEY_LISTS + 1, False)])
+def test_scenario_key_lists_only_for_small_n(n, has_lists):
+    ds = gen.generate(n, 4)
+    assert ("scenario_keys" in ds.expected) is has_lists
+    if has_lists:
+        assert ds.expected["scenario_keys"] == ds.buckets
+    assert ds.expected["bucket_sizes"] == {name: len(keys) for name, keys in ds.buckets.items()}
+
+
+def test_customer_count_has_a_floor_of_five():
+    assert len(_data_rows(gen.generate(60, 42).customers_csv)) == 5
+    assert len(_data_rows(gen.generate(1000, 1).customers_csv)) == 20
 
 
 def test_n_too_small_is_rejected():
@@ -113,7 +126,7 @@ def test_expected_counts_are_internally_consistent(n, seed):
         assert s["rows_read"] == (s["accepted"] + sum(s["rejected_by_reason"].values())
                                   + s["duplicate_exact"] + s["superseded"] + s["conflicting_rows"]), side
     ref = exp["sides"]["REFERENCE"]
-    assert ref["rows_read"] == len(_data_rows(ds.customers_csv)) == max(1, n // 50)
+    assert ref["rows_read"] == len(_data_rows(ds.customers_csv)) == max(5, n // 50)
 
     total_keys = n + exp["bucket_sizes"]["extra_in_target"]
     assert exp["total_keys"] == total_keys
@@ -156,7 +169,7 @@ def test_target_is_shuffled_and_renamed_and_source_is_key_ordered():
 def test_out_of_order_older_version_is_written_after_newer():
     ds = gen.generate(1000, 2)
     rows = _data_rows(ds.source_csv)
-    for key in ds.expected["scenario_keys"]["src_out_of_order"]:
+    for key in ds.buckets["src_out_of_order"]:
         versions = [r[7] for r in rows if r[0] == key]
         assert len(versions) == 2 and versions[0] > versions[1], key
 

@@ -29,3 +29,5 @@ machine-readable report and isolates mismatched records.
    next step on your own.
 9. **Ambiguity:** if something is ambiguous, ask. Record each design decision as one dated line
    in `docs/DECISIONS.md`.
+10. **Git:** never run git commit, git add or any git write command. The user reviews and commits
+    every step.

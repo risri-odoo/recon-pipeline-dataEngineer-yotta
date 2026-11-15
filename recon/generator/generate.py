@@ -19,6 +19,10 @@ from pathlib import Path
 
 GENERATOR_VERSION = 1
 
+# expected/<name>.json lists the keys of each scenario only when N <= this; larger runs keep counts only.
+SMALL_N_KEY_LISTS = 1000
+MIN_CUSTOMERS = 5
+
 STATUSES = ("PLACED", "SHIPPED", "DELIVERED", "CANCELLED", "RETURNED")
 # The status an order had one step earlier in its life (used for stale / superseded versions).
 PREVIOUS_STATUS = {"SHIPPED": "PLACED", "DELIVERED": "SHIPPED", "CANCELLED": "PLACED", "RETURNED": "DELIVERED"}
@@ -136,6 +140,8 @@ class Dataset:
     target_csv: bytes
     customers_csv: bytes
     expected: dict
+    # Generator bookkeeping: scenario -> sorted keys, for every N (not written to disk for large N).
+    buckets: dict[str, list[str]]
     files: dict[str, bytes] = field(init=False)
 
     def __post_init__(self) -> None:
@@ -161,7 +167,7 @@ def generate(n: int, seed: int) -> Dataset:
     n_extra = sizes["extra_in_target"]
     width = max(6, len(str(n + n_extra)))
 
-    n_customers = max(1, n // 50)
+    n_customers = max(MIN_CUSTOMERS, n // 50)
     customers = [f"C{i:05d}" for i in range(1, n_customers + 1)]
 
     base = [_random_order(rng, f"ORD-{i:0{width}d}", customers) for i in range(1, n + 1)]
@@ -200,6 +206,7 @@ def generate(n: int, seed: int) -> Dataset:
         target_csv=_csv_bytes(TARGET_HEADER, [line.cells for line in target_lines]),
         customers_csv=_csv_bytes(CUSTOMER_HEADER, customer_rows),
         expected=expected,
+        buckets={name: list(keys) for name, keys in sorted(buckets.items())},
     )
 
 
@@ -366,7 +373,7 @@ def _expected(n: int, seed: int, n_extra: int, customers: list[str], buckets: di
 
     unattributable = sum(1 for line in source_lines + target_lines if line.disposition == "ROW_REJECT:MALFORMED_ROW")
     all_matched = key_status_counts["MATCHED"] == n + n_extra
-    return {
+    expected = {
         "generator_version": GENERATOR_VERSION,
         "n": n,
         "seed": seed,
@@ -379,8 +386,10 @@ def _expected(n: int, seed: int, n_extra: int, customers: list[str], buckets: di
                               for (f, d), c in sorted(field_diff_counts.items())],
         "unattributable_rejects": unattributable,
         "recon_status": "PASS" if all_matched and unattributable == 0 else "FAIL",
-        "scenario_keys": {name: keys for name, keys in sorted(buckets.items())},
     }
+    if n <= SMALL_N_KEY_LISTS:
+        expected["scenario_keys"] = {name: keys for name, keys in sorted(buckets.items())}
+    return expected
 
 
 def _side_summary(lines: list[Line]) -> dict:
