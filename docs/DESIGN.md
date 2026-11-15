@@ -2,6 +2,7 @@
 
 Status: rev 3, all review questions resolved (2026-11-15). Every reason code, status and check name in
 section 4 comes from the reviewed catalogue. Do not rename or add any of them without sign-off.
+Approved additions since rev 3: batch reject `MALFORMED_FILE` (4.1) and FAILED reason `INPUT_CHANGED` (section 3, `run`), both 2026-11-15.
 
 ---
 
@@ -122,8 +123,8 @@ Conventions:
 | source_sha256 / target_sha256 / reference_sha256 | TEXT | raw-bytes hash. NULL if the file is missing |
 | config_sha256 | TEXT NOT NULL | canonical config hash |
 | started_at / finished_at | TEXT | the only non-deterministic columns |
-| failure_reason | TEXT | REJECTED: the batch-reject code. FAILED: `INVARIANT_VIOLATION:<check>` or `UNEXPECTED_ERROR`. ABANDONED: `STALE_RUNNING` |
-| failure_detail | TEXT | REJECTED: every batch reject as JSON `[{side, file, code, detail}]`. FAILED: invariant counts as JSON, or the exception type and message |
+| failure_reason | TEXT | REJECTED: the batch-reject code. FAILED: `INVARIANT_VIOLATION:<check>`, `INPUT_CHANGED` (a file's bytes changed between the batch-check pass and the landing pass) or `UNEXPECTED_ERROR`. ABANDONED: `STALE_RUNNING` |
+| failure_detail | TEXT | REJECTED: every batch reject as JSON `[{side, file, code, detail}]`. FAILED: invariant counts as JSON; for INPUT_CHANGED `{side, file, expected_sha256, actual_sha256}` (`MISSING` if the file vanished); otherwise the exception type and message |
 
 **raw_record** (written by `bronze_repo`)
 
@@ -243,6 +244,7 @@ PK `(run_id, side, line_no)`. Each data record is either clean or quarantined ex
 | FILE_NOT_FOUND | path does not exist or is not a file |
 | EMPTY_FILE | zero bytes, or no non-blank header line |
 | ENCODING_ERROR | bytes are not valid UTF-8 (a leading UTF-8 BOM is stripped first) |
+| MALFORMED_FILE | the CSV structure of the file is broken: (a) the header record cannot be parsed (strict CSV parse fails), or (b) the file ends while a quoted field is still open (unterminated quote). Detail gives the line_no where the open record started. Never reported as EMPTY_FILE |
 | DUPLICATE_HEADER | two header names are equal after trim + lower-case |
 | SCHEMA_MISSING_COLUMN | the physical column of a **required** logical field is absent |
 
@@ -373,7 +375,7 @@ stateDiagram-v2
     [*] --> RUNNING
     RUNNING --> SUCCEEDED: pipeline completed (recon PASS or FAIL)
     RUNNING --> REJECTED: any batch reject
-    RUNNING --> FAILED: invariant violation or unexpected error
+    RUNNING --> FAILED: invariant violation, input changed or unexpected error
     RUNNING --> ABANDONED: started_at older than --stale-after-minutes, found by a later invocation
 ```
 
