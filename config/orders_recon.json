@@ -1,0 +1,47 @@
+{
+  "dataset": "orders",
+  "business_key": "order_id",
+  "version_field": "updated_at",
+  "fields": [
+    {"name": "order_id", "type": "str", "required": true, "upper": true},
+    {"name": "customer_id", "type": "str", "required": true, "upper": true, "reference": true},
+    {"name": "order_ts", "type": "timestamp", "required": true},
+    {"name": "status", "type": "enum", "required": true,
+     "values": ["PLACED", "SHIPPED", "DELIVERED", "CANCELLED", "RETURNED"]},
+    {"name": "amount", "type": "decimal", "required": true, "scale": 2, "min": "0", "tolerance": "0.01"},
+    {"name": "currency", "type": "str", "required": true, "upper": true, "pattern": "^[A-Z]{3}$"},
+    {"name": "discount", "type": "decimal", "required": false, "scale": 2, "min": "0", "tolerance": "0.01"},
+    {"name": "updated_at", "type": "timestamp", "required": true}
+  ],
+  "compare_fields": ["customer_id", "order_ts", "status", "amount", "currency", "discount"],
+  "columns": {
+    "source": {
+      "order_id": "order_id",
+      "customer_id": "customer_id",
+      "order_ts": "order_ts",
+      "status": "status",
+      "amount": "amount",
+      "currency": "currency",
+      "discount": "discount",
+      "updated_at": "updated_at"
+    },
+    "target": {
+      "order_id": "order_id",
+      "customer_id": "cust_id",
+      "order_ts": "order_timestamp",
+      "status": "order_status",
+      "amount": "total_amount",
+      "currency": "currency_code",
+      "discount": "discount_amount",
+      "updated_at": "last_modified"
+    }
+  },
+  "reference": {
+    "key": "customer_id",
+    "columns": {"customer_id": "customer_id", "customer_name": "customer_name"}
+  },
+  "aggregates": {
+    "sum_fields": ["amount", "discount"],
+    "group_by": ["status", "currency"]
+  }
+}

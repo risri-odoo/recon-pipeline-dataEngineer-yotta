@@ -24,3 +24,10 @@ One dated line per decision.
 - 2026-11-15: A SKIPPED invocation writes only its own run row; nothing else in bronze, silver or gold.
 - 2026-11-15: A tie at max updated_at between a rejected and a valid row is treated as rejected (conservative): key *_REJECTED, valid rows SUPERSEDED with detail "shadowed by rejected line N".
 - 2026-11-15: Blank lines (empty or whitespace-only) are not landed in raw_record and not quarantined; counted per side as metrics blank_lines; row accounting covers landed DATA records only.
+- 2026-11-15: Config shape: `fields` list (order = validation order) with types str|enum|decimal|timestamp; top-level `business_key`, `version_field`, `compare_fields`, `columns.source/target`, `reference`, `aggregates.sum_fields/group_by`; unknown keys anywhere are a ConfigError.
+- 2026-11-15: Decimal config values (`min`, `tolerance`) must be JSON strings, never JSON numbers, so no float ever enters the config; tolerance is stored as integer minor units (0.01 -> 1).
+- 2026-11-15: config_sha256 hashes the raw config with per-type defaults filled in (required=false; str upper=false, pattern=null, reference=false; decimal scale=2, min=null, tolerance="0").
+- 2026-11-15: Currency shape is expressed as str + `pattern: ^[A-Z]{3}$` (applied after upper-casing) rather than a dedicated type.
+- 2026-11-15: BAD_FORMAT vs BAD_TYPE: money is BAD_FORMAT if, after removing currency-symbol characters, it looks numeric (digits with , . sign or exponent), else BAD_TYPE; a timestamp is BAD_FORMAT if it looks like a date (d-d-d, d/d/d, d.d.d) but not the accepted form, BAD_TYPE otherwise or when the calendar date/time/offset is impossible.
+- 2026-11-15: Physical column names (side maps and reference.columns values) are not snake_case-checked: they are normalized with trim + lower-case (same as headers), must be non-empty after that, and must be unique per side after normalization. Logical field names stay strict snake_case.
+- 2026-11-15: validate_row takes an optional reference-id set; INVALID_REFERENCE is added only when every other field passed.
