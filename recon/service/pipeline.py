@@ -14,7 +14,8 @@ Flow of `run_pipeline`:
    SUCCEEDED in the same transaction, so the data and the SUCCEEDED status commit together.
 4. A batch reject, invariant violation, changed input or any other exception rolls the data
    transaction back (no BRONZE/SILVER/GOLD row survives) and a separate short transaction marks the
-   run REJECTED or FAILED.
+   run REJECTED or FAILED. A BaseException (Ctrl-C, SystemExit) is recorded as FAILED / INTERRUPTED,
+   then re-raised.
 
 Fault injection (tests only): RECON_FAIL_AT=after_bronze|after_silver|after_gold raises RuntimeError at
 that point inside the data transaction.
@@ -47,6 +48,7 @@ from recon.service.validate import ReferenceValidation, validate_reference, vali
 RUNNING, SUCCEEDED, FAILED = "RUNNING", "SUCCEEDED", "FAILED"
 REJECTED, SKIPPED, ABANDONED = "REJECTED", "SKIPPED", "ABANDONED"
 UNEXPECTED_ERROR = "UNEXPECTED_ERROR"
+INTERRUPTED = "INTERRUPTED"  # a BaseException (KeyboardInterrupt, SystemExit) ended the data stage
 EXIT_PASS, EXIT_FAIL, EXIT_ERROR = 0, 1, 2
 
 FAIL_AT_ENV = "RECON_FAIL_AT"
@@ -357,6 +359,9 @@ def _execute(conn: sqlite3.Connection, outcome: RunOutcome, paths: dict[str, str
         _fail(conn, outcome, FAILED, exc.failure_reason, exc.failure_detail)
     except Exception as exc:  # noqa: BLE001 - any other error is UNEXPECTED_ERROR; the data already rolled back
         _fail(conn, outcome, FAILED, UNEXPECTED_ERROR, f"{type(exc).__name__}: {exc}")
+    except BaseException as exc:  # Ctrl-C, SystemExit: record FAILED so a rerun need not wait for the stale rule
+        _fail(conn, outcome, FAILED, INTERRUPTED, f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__)
+        raise
     else:
         log_event("run_finished", run_id=run_id, status=SUCCEEDED, recon_status=outcome.recon_status,
                   exit_code=outcome.exit_code)

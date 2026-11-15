@@ -5,7 +5,9 @@ section 4 comes from the reviewed catalogue. Do not rename or add any of them wi
 Approved additions since rev 3: batch reject `MALFORMED_FILE` (4.1) and FAILED reason `INPUT_CHANGED` (section 3, `run`), both 2026-11-15;
 column `run.config_json` and the `recon report` command (section 6.7), 2026-11-15;
 money `max` with OUT_OF_RANGE above it (2.1, 4.3), FAILED reason `AGGREGATE_OVERFLOW` (section 3, `run`; 7.2),
-ASCII-only upper-casing of str fields and enums (7.1 #16) and the same-second CONFLICT limitation (7.2), 2026-11-15.
+ASCII-only upper-casing of str fields and enums (7.1 #16) and the same-second CONFLICT limitation (7.2), 2026-11-15;
+final review (step 12): a keyed reject with an unparseable `updated_at` shadows its key (4.4), FAILED reason
+`INTERRUPTED` (section 3, `run`), config fields must match the stored orders schema (2.1), 2026-11-15.
 
 ---
 
@@ -76,6 +78,10 @@ violation stops here) → **report**.
 
 Grain: one input row = one version of an order. SILVER keeps at most one row per `(run_id, side, order_id)`.
 
+`clean_record` stores exactly this schema, so the config's `fields` must declare these eight logical fields with
+these types and required flags (any order). Anything else is a ConfigError before a run starts; another
+dataset needs a new `clean_record` layout.
+
 Aggregates: row count, SUM(amount), SUM(discount). Each is computed overall, grouped by status and grouped by currency.
 
 ### 2.2 Physical column mapping
@@ -129,8 +135,8 @@ Conventions:
 | config_sha256 | TEXT NOT NULL | canonical config hash |
 | config_json | TEXT | the canonical config JSON that `config_sha256` hashes (section 5). Written on every RUNNING and SKIPPED row; `recon report` rebuilds the config from it and refuses it unless it hashes to `config_sha256` |
 | started_at / finished_at | TEXT | the only non-deterministic columns |
-| failure_reason | TEXT | REJECTED: the batch-reject code. FAILED: `INVARIANT_VIOLATION:<check>`, `INPUT_CHANGED` (a file's bytes changed between the batch-check pass and the landing pass), `AGGREGATE_OVERFLOW` (a money SUM no longer fits a 64-bit integer, section 7.2) or `UNEXPECTED_ERROR`. ABANDONED: `STALE_RUNNING` |
-| failure_detail | TEXT | REJECTED: every batch reject as JSON `[{side, file, code, detail}]`. FAILED: invariant counts as JSON; for INPUT_CHANGED `{side, file, expected_sha256, actual_sha256}` (`MISSING` if the file vanished); for AGGREGATE_OVERFLOW `{error, step}` (step `aggregates` or `checks`); otherwise the exception type and message |
+| failure_reason | TEXT | REJECTED: the batch-reject code. FAILED: `INVARIANT_VIOLATION:<check>`, `INPUT_CHANGED` (a file's bytes changed between the batch-check pass and the landing pass), `AGGREGATE_OVERFLOW` (a money SUM no longer fits a 64-bit integer, section 7.2), `INTERRUPTED` (Ctrl-C / SystemExit during the data stage; recorded, then re-raised) or `UNEXPECTED_ERROR`. ABANDONED: `STALE_RUNNING` |
+| failure_detail | TEXT | REJECTED: every batch reject as JSON `[{side, file, code, detail}]`. FAILED: invariant counts as JSON; for INPUT_CHANGED `{side, file, expected_sha256, actual_sha256}` (`MISSING` if the file vanished); for AGGREGATE_OVERFLOW `{error, step}` (step `aggregates` or `checks`); otherwise the exception type (and message, if any) |
 
 **raw_record** (written by `bronze_repo`)
 
@@ -292,8 +298,12 @@ Validation order is fixed: MALFORMED_ROW first, then field by field in logical-s
 
 ### 4.4 Duplicate dispositions and version ordering (written to quarantine, category DUPLICATE)
 
-Version ordering is per `(side, order_id)` and covers **every** row of the key whose `updated_at` parsed, **including rejected rows**. Rows whose `updated_at` did not parse cannot win; they stay ROW_REJECT and are ignored for ordering. Let `max_u` be the maximum `updated_at` over the participating rows.
+Version ordering is per `(side, order_id)` and covers **every** row of the key whose `updated_at` parsed, **including rejected rows**. Let `max_u` be the maximum `updated_at` over the participating rows.
 
+0. **If any rejected row of the key has an `updated_at` that did not parse**, its version is unknown, so no valid row can be proven to be the newest (final review, 2026-11-15). It shadows the key exactly like rule 1:
+   - the key has no clean row (it gets SOURCE_REJECTED / TARGET_REJECTED, section 4.5);
+   - **every** valid row of the key becomes SUPERSEDED, with detail `shadowed by rejected line N (unparseable updated_at)`, N = the lowest such line;
+   - there is no fallback to an older valid version. Rule 0 applies before rules 1 and 2.
 1. **If any rejected row is at `max_u`**, the newest version is rejected. This includes a tie with valid rows at the same `max_u`, which is treated as rejected (conservative):
    - the key has no clean row (it gets SOURCE_REJECTED / TARGET_REJECTED, section 4.5);
    - **every** valid row of the key becomes SUPERSEDED, with detail `shadowed by rejected line N`, which explains the label even when the valid row is not strictly older;
@@ -337,7 +347,10 @@ Money fields are equal when `|src_minor − tgt_minor| ≤ 1`. All other fields 
 - a key with only a target row subtracts its target value from the target group;
 - a key with rows on both sides adds `src` to the group of its source status/currency and `−tgt` to the group of its target status/currency (in-tolerance differences included).
 
-This is computed independently of the SQL `SUM` that produces `source_value` and `target_value`.
+This is computed in a separate query path from the SQL `SUM` that produces `source_value` and `target_value`
+(a walk over key_result instead of a plain GROUP BY), but **from the same clean rows**. It therefore detects
+bugs in the aggregation logic (grouping, signs, NULL handling), not missing or extra rows: a clean row absent
+from both paths would cancel out. Missing or extra keys are caught by KEY_COVERAGE (section 4.7).
 
 ### 4.7 Checks
 
@@ -354,7 +367,7 @@ Two kinds of check:
 | KEY_UNIQUENESS | INVARIANT | clean_record has ≤ 1 row per (side, order_id), and key_result has ≤ 1 row per order_id |
 | REFERENTIAL_INTEGRITY | INVARIANT | every clean_record.customer_id exists in ref_customer for the run |
 | KEY_COVERAGE | INVARIANT | key_result has exactly the set of order_ids in clean_record ∪ keyed quarantine rows (SOURCE/TARGET): none missing, none extra |
-| AGGREGATE_EXPLAINED | INVARIANT | `unexplained_delta = 0` on every aggregate_result row |
+| AGGREGATE_EXPLAINED | INVARIANT | `unexplained_delta = 0` on every aggregate_result row. Both sides of that equation are built from the same clean rows by different queries (section 4.6), so this check catches aggregation-logic bugs, not missing rows (KEY_COVERAGE covers those) |
 | SCHEMA_DRIFT | WARN | no SCHEMA_EXTRA_COLUMN on any side; otherwise WARN, detail = `[{side, columns}]` |
 | MISSING_OPTIONAL_COLUMN | WARN | no side is missing an optional column; otherwise WARN, detail = `[{side, columns}]` |
 | EMPTY_BATCH | WARN | no side has zero data records; otherwise WARN, detail = `[{side, columns: []}]` |
@@ -369,6 +382,11 @@ Data problems (rejects, conflicts, mismatches) only ever affect `recon_status`. 
 - every key_result row is MATCHED;
 - there are no SOURCE or TARGET ROW_REJECT rows without an `order_id`.
 
+**Both order sides empty.** When SOURCE and TARGET both have a valid header and zero data records, there are no
+keys, so every key_result row is vacuously MATCHED and `recon_status = PASS` (exit 0): a legitimately quiet day
+is possible. It is never silent: EMPTY_BATCH is WARN for both sides (section 4.2), and operators should alert on
+that warning, because an upstream job that exported only headers looks the same.
+
 The second condition exists because unattributable records, such as a MALFORMED_ROW, cannot be shown to match. SUPERSEDED and DUPLICATE_EXACT rows, and rejects of older versions that did not win, do not fail recon on their own. Reference-side rejects do not fail recon directly; their effect shows up as INVALID_REFERENCE on orders.
 
 ---
@@ -381,7 +399,7 @@ stateDiagram-v2
     [*] --> RUNNING
     RUNNING --> SUCCEEDED: pipeline completed (recon PASS or FAIL)
     RUNNING --> REJECTED: any batch reject
-    RUNNING --> FAILED: invariant violation, input changed, aggregate overflow or unexpected error
+    RUNNING --> FAILED: invariant violation, input changed, aggregate overflow, interrupted or unexpected error
     RUNNING --> ABANDONED: started_at older than --stale-after-minutes, found by a later invocation
 ```
 
@@ -493,3 +511,10 @@ stateDiagram-v2
    - If a SUM does overflow, SQLite raises `integer overflow`; the run becomes FAILED with
      `AGGREGATE_OVERFLOW` (no partial data, exit 2). Totals are never guessed or switched to floating point.
 7. On Windows, publishing a report renames the run folder, which fails if another process holds a file in it open (for example a report file open in an editor that locks it). Nothing is lost: the previous folder is restored, the command exits 2, and `recon report --run-id` can be rerun once the file is closed.
+8. Duplicate REFERENCE customer_ids are kept once and the repeats get no quarantine row (7.1 #10), an exception to "every excluded row is traceable"; they show only as the count `duplicates_ignored`.
+9. On a SKIPPED run, the stdout `attempt=` is the SKIPPED row's own attempt while `run_id=` names the reused SUCCEEDED run (its attempt is the `-aN` suffix).
+10. A NULL group value is stored as the string `NULL`, so a real value `NULL` in a str `group_by` field would merge with the NULL group in aggregate_result. Orders is unaffected (status is an enum, currency must match `[A-Z]{3}`).
+11. A non-string `reference.key` in the config raises a TypeError (exit 2, `error: TypeError ...`) instead of a ConfigError message.
+12. `tests/unit/test_architecture.py` scans string constants only; SQL assembled in an f-string outside `recon/repository` would not be caught.
+13. Timestamp offsets are accepted up to ±23:59, although real-world offsets stop at ±14:00.
+14. A hard kill (SIGKILL, power loss) still leaves the run RUNNING until the stale rule abandons it; Ctrl-C and SystemExit are recorded as FAILED / `INTERRUPTED`.

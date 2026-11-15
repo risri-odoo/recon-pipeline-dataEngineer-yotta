@@ -1,6 +1,10 @@
 """Duplicate dispositions and version ordering per business key (docs/DESIGN.md section 4.4).
 
-Per (side, key), version ordering covers every valid row plus every rejected row whose updated_at parsed.
+Per (side, key):
+0. a keyed rejected row whose updated_at did not parse shadows the key: its version is unknown, so no valid
+   row can be proven newest. No clean row; every valid row is SUPERSEDED
+   ("shadowed by rejected line N (unparseable updated_at)", N = the lowest such line);
+Otherwise version ordering covers every valid row plus every rejected row whose updated_at parsed.
 With max_u = the maximum updated_at over those rows:
 1. a rejected row at max_u shadows the key: no clean row, every valid row is SUPERSEDED
    ("shadowed by rejected line N"); there is no fallback to an older version;
@@ -79,18 +83,28 @@ def _lines(rows: Iterable[ValidRow]) -> str:
 
 
 def dedupe(valid: Iterable[ValidRow], rejects: Iterable[QuarantineEntry] = ()) -> DedupeResult:
-    """Pick at most one winner per key among `valid`; `rejects` take part in version ordering only."""
+    """Pick at most one winner per key among `valid`; `rejects` take part in version ordering only
+    (a keyed reject with an unparsed updated_at shadows its key, rule 0 above)."""
     by_key: dict[str, list[ValidRow]] = defaultdict(list)
     for row in sorted(valid, key=lambda r: r.line_no):
         by_key[row.key].append(row)
     rejected_versions: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    unknown_versions: dict[str, list[int]] = defaultdict(list)  # keyed rejects whose updated_at did not parse
     for rej in rejects:
-        if rej.order_id is not None and rej.updated_at is not None:
+        if rej.order_id is None:
+            continue
+        if rej.updated_at is None:
+            unknown_versions[rej.order_id].append(rej.line_no)
+        else:
             rejected_versions[rej.order_id].append((rej.updated_at, rej.line_no))
 
     result = DedupeResult()
     for key in sorted(by_key):
         rows = by_key[key]
+        if key in unknown_versions:
+            detail = f"shadowed by rejected line {min(unknown_versions[key])} (unparseable updated_at)"
+            result.dispositions += [_disposition(r, SUPERSEDED, detail) for r in rows]
+            continue
         max_u = max([r.version for r in rows] + [u for u, _ in rejected_versions.get(key, [])])
         shadow = sorted(line for u, line in rejected_versions.get(key, []) if u == max_u)
         if shadow:

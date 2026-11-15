@@ -109,19 +109,22 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if outcome.run_dir is not None and outcome.metrics is not None:
         write_metrics(outcome.run_dir, outcome.metrics)
     report_path = args.out / outcome.result_run_id / REPORT_JSON
+    report_written = outcome.status in (pipeline.SUCCEEDED, pipeline.SKIPPED)
     if outcome.status == pipeline.SUCCEEDED and not _publish_report(args.db, args.out, outcome.run_id):
-        exit_code = pipeline.EXIT_ERROR
+        exit_code = pipeline.EXIT_ERROR  # the run succeeded but its report files are missing
+        report_written = False
     elif outcome.status == pipeline.SKIPPED and not report_path.is_file():  # never rewritten (DESIGN 6.2)
         print(f"warning: report not found at {report_path.as_posix()}; regenerate it with "
               f"`recon report --run-id {outcome.result_run_id}`", file=sys.stderr)
     fields = {"status": outcome.status, "run_id": outcome.result_run_id}
     if outcome.status == pipeline.SKIPPED:
         fields["skip_run_id"] = outcome.run_id
-    fields.update(attempt=outcome.attempt, recon_status=outcome.recon_status or "-", exit_code=outcome.exit_code)
+    # exit_code is what the process returns, so schedulers reading this line see the real outcome.
+    fields.update(attempt=outcome.attempt, recon_status=outcome.recon_status or "-", exit_code=exit_code)
     if outcome.failure_reason:
         fields["failure_reason"] = outcome.failure_reason
     fields["out"] = (args.out / outcome.result_run_id).as_posix()
-    if outcome.status in (pipeline.SUCCEEDED, pipeline.SKIPPED):
+    if report_written:
         fields["report"] = report_path.as_posix()
     print(" ".join(f"{k}={v}" for k, v in fields.items()))
     return exit_code

@@ -81,7 +81,7 @@ file-format list from the step-9 prompt. Where the prompt and DESIGN differ, DES
 | 53 | unit | Different payloads at max updated_at | all top rows CONFLICTING_DUPLICATE; older SUPERSEDED; no clean row | unit/test_dedupe.py::test_conflicting_duplicate, unit/test_dedupe.py::test_conflict_with_an_identical_pair_still_quarantines_all_top_rows | covered |
 | 54 | unit | Rejected newest version (newer, or tie) | no fallback; valid rows SUPERSEDED `shadowed by rejected line N` | unit/test_dedupe.py::test_newest_reject_shadows_valid_rows[*] | covered |
 | 55 | unit | Older reject, newer valid row | valid row wins | unit/test_dedupe.py::test_older_reject_and_valid_row_valid_wins | covered |
-| 56 | unit | Reject with unparsed updated_at | cannot win | unit/test_dedupe.py::test_reject_with_unparsed_version_cannot_win | covered |
+| 56 | unit, integration | Reject with unparsed updated_at (final review) | shadows the key: no clean row, valid rows SUPERSEDED "shadowed by rejected line N (unparseable updated_at)", key SOURCE_REJECTED, recon FAIL | unit/test_dedupe.py::test_reject_with_unparsed_version_shadows_the_key, integration/test_pipeline.py::test_newer_row_with_unparseable_updated_at_shadows_the_key_instead_of_a_false_pass | added (step 12) |
 | 57 | unit | Duplicates on the TARGET side | same rules, side TARGET | unit/test_dedupe.py::test_duplicates_on_target_side | covered |
 | 58 | unit | Arrival order | every permutation gives the same outcome | unit/test_dedupe.py::test_arrival_order_never_changes_the_outcome | covered |
 | 59 | unit | Row accounting per side | landed = clean + quarantine; counts balance | unit/test_dedupe.py::test_row_accounting_every_side | covered |

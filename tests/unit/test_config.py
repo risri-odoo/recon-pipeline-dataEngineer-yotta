@@ -133,6 +133,55 @@ def test_config_validation_errors(raw_config, mutate, message):
         parse_config(raw_config)
 
 
+# --------------------------------------------------------------------------- stored schema (final review #2)
+
+
+def _drop_discount(r):
+    r["fields"].remove(field(r, "discount"))
+    r["compare_fields"].remove("discount")
+    r["aggregates"]["sum_fields"].remove("discount")
+    for side in ("source", "target"):
+        r["columns"][side].pop("discount")
+
+
+def _add_channel(r):
+    r["fields"].append({"name": "channel", "type": "str"})
+    r["compare_fields"].append("channel")
+    for side in ("source", "target"):
+        r["columns"][side]["channel"] = "channel"
+
+
+def _currency_as_enum(r):
+    r["fields"][r["fields"].index(field(r, "currency"))] = {
+        "name": "currency", "type": "enum", "required": True, "values": ["USD", "EUR"]}
+
+
+@pytest.mark.parametrize("mutate, message", [
+    (_drop_discount, "missing field(s) discount"),
+    (_add_channel, "unsupported field(s) channel"),
+    (lambda r: field(r, "amount").update(required=False), "amount must be decimal, required=true"),
+    (lambda r: field(r, "discount").update(required=True), "discount must be decimal, required=false"),
+    (_currency_as_enum, "currency must be str, required=true"),
+], ids=["missing discount", "extra field", "optional amount", "required discount", "wrong type"])
+def test_fields_must_match_the_stored_orders_schema(raw_config, mutate, message):
+    mutate(raw_config)
+    with pytest.raises(ConfigError, match=re.escape(message)) as err:
+        parse_config(raw_config)
+    assert "stored orders schema (clean_record)" in str(err.value)
+
+
+def test_field_order_is_free_and_stored_schema_matches_clean_record():
+    from recon.repository.silver_repo import CLEAN_VALUE_COLUMNS, KEY_COLUMN
+    from recon.service.config import STORED_SCHEMA
+    stored = {f"{n}_minor" if t == "decimal" else n for n, (t, _) in STORED_SCHEMA.items()}
+    assert stored == set(CLEAN_VALUE_COLUMNS) | {KEY_COLUMN}
+
+
+def test_reordered_fields_are_accepted(raw_config):
+    raw_config["fields"].reverse()
+    assert [f.name for f in parse_config(raw_config).fields][0] == "updated_at"
+
+
 # --------------------------------------------------------------------------- money max (DESIGN 7.2, P1)
 
 

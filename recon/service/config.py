@@ -21,6 +21,20 @@ INT64_MAX = 2**63 - 1
 MONEY_SUM_HEADROOM_ROWS = 1_000_000
 MONEY_LIMIT_MINOR = INT64_MAX // MONEY_SUM_HEADROOM_ROWS  # 9_223_372_036_854 (92233720368.54 at scale 2)
 
+# The logical schema that clean_record stores (DESIGN 2.1, 3): name -> (type, required). The table has one
+# column per field (decimal fields as <name>_minor), so a config must declare exactly these fields with these
+# types and required flags; another dataset needs a new clean_record layout.
+STORED_SCHEMA: dict[str, tuple[str, bool]] = {
+    "order_id": ("str", True),
+    "customer_id": ("str", True),
+    "order_ts": ("timestamp", True),
+    "status": ("enum", True),
+    "amount": ("decimal", True),
+    "currency": ("str", True),
+    "discount": ("decimal", False),
+    "updated_at": ("timestamp", True),
+}
+
 _SNAKE = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
 _TOP_KEYS = {"dataset", "fields", "business_key", "version_field", "compare_fields",
              "columns", "reference", "aggregates"}
@@ -152,6 +166,7 @@ def parse_config(raw: Any) -> Config:
 
     reference = _parse_reference(raw.get("reference"), fields)
     aggregates = _parse_aggregates(raw["aggregates"], by_name)
+    _check_stored_schema(fields)
 
     return Config(
         dataset=_str(raw["dataset"], "dataset"),
@@ -247,6 +262,21 @@ def _parse_field(raw: Any, index: int, canonical: dict[str, Any]) -> FieldSpec:
         return FieldSpec(name, ftype, required, scale=scale, min_minor=min_minor, max_minor=max_minor,
                          tolerance_minor=tolerance)
     return FieldSpec(name, ftype, required)
+
+
+def _check_stored_schema(fields: tuple[FieldSpec, ...]) -> None:
+    """Fail fast unless the fields are exactly the stored clean_record schema (STORED_SCHEMA), in any order."""
+    declared = {f.name: f for f in fields}
+    missing = [n for n in STORED_SCHEMA if n not in declared]
+    extra = [f.name for f in fields if f.name not in STORED_SCHEMA]
+    wrong = [f"{name} must be {ftype}, required={str(req).lower()}"
+             for name, (ftype, req) in STORED_SCHEMA.items()
+             if name in declared and (declared[name].type, declared[name].required) != (ftype, req)]
+    problems = ([f"missing field(s) {', '.join(missing)}"] if missing else []) \
+        + ([f"unsupported field(s) {', '.join(extra)}"] if extra else []) + wrong
+    if problems:
+        raise ConfigError("fields do not match the stored orders schema (clean_record): " + "; ".join(problems)
+                          + ". Another dataset needs a new clean_record layout")
 
 
 def _parse_business_key(raw: Any, by_name: dict[str, FieldSpec], version_field: str) -> tuple[str, ...]:

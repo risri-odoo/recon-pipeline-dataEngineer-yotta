@@ -66,6 +66,13 @@ One JSON file describes the dataset: [config/orders_recon.json](config/orders_re
 anywhere are an error. The config is hashed after defaults are filled in (`config_sha256`), and that hash
 is part of the run key, so changing the config means a new run.
 
+**The engine stores the orders schema.** `clean_record` has one column per orders field, so `fields` must
+declare exactly `order_id`, `customer_id`, `order_ts`, `status`, `amount`, `currency`, `discount` and
+`updated_at`, with the types and required flags of the shipped config (field order is free). Anything else
+(a missing or extra field, an optional `amount`) is a config error before the run starts. The config can
+change column mappings, the business key, enum values, patterns, scales, bounds, tolerances, compare fields
+and aggregates; another dataset needs a new `clean_record` layout.
+
 | key | meaning (orders config) |
 |---|---|
 | `dataset` | name shown in the report (`orders`) |
@@ -126,7 +133,9 @@ a crash never leaves half a set. FAILED and REJECTED runs get no report files; r
 
 **Reading `report.json`** — in this order:
 1. `run.recon_status` (PASS/FAIL) and `run.exit_code`: the verdict. PASS means every key is MATCHED and no
-   record was rejected without a key.
+   record was rejected without a key. If SOURCE and TARGET both have zero data records, there is nothing to
+   mismatch and the run is PASS, but the EMPTY_BATCH warning names both sides: alert on it, because an
+   upstream job that exported only headers looks the same (DESIGN 4.8).
 2. `totals`: `keys`, `non_matched_keys` (= rows in mismatches.csv), `field_diffs`, `quarantine_rows`,
    `unattributable_rejects`.
 3. `key_status_counts` (all 7 statuses, zeros included) and `field_diff_counts` (every compare field ×
@@ -154,7 +163,8 @@ Every run is identified by `run_key = sha256(source, target, reference and confi
 | Re-run after success | run the same command again | SKIPPED: a run row is recorded, nothing else is written, the existing report path is printed, exit code of the reused run |
 | Re-run anyway | add `--force` | new attempt (`-a2`, …); earlier attempts untouched |
 | Retry after FAILED / REJECTED | fix the cause, run the same command | next attempt starts from the input files; no flag needed |
-| Restart after a crash / kill | run the same command | a RUNNING attempt older than `--stale-after-minutes` (default 60) becomes ABANDONED and a new attempt starts; a younger one gives `run in progress`, exit 2. Lower the threshold (e.g. `--stale-after-minutes 5`) to restart sooner. Never resumes mid-run |
+| Restart after Ctrl-C | run the same command | the interrupted attempt was recorded as FAILED / `INTERRUPTED` (data rolled back), so the next attempt starts at once |
+| Restart after a hard crash / kill | run the same command | a RUNNING attempt older than `--stale-after-minutes` (default 60) becomes ABANDONED and a new attempt starts; a younger one gives `run in progress`, exit 2. Lower the threshold (e.g. `--stale-after-minutes 5`) to restart sooner. Never resumes mid-run |
 | Report files lost or locked | `python -m recon report --run-id <run_id>` | rebuilt byte-identical from the DB |
 
 **Demonstrate a crash and retry** (PowerShell; a separate DB so an earlier quickstart run is not reused):
@@ -176,16 +186,21 @@ python -m recon run --source data/sample/source.csv --target data/sample/target.
 On Linux/macOS: `RECON_FAIL_AT=after_silver python -m recon run ...`.
 
 **Backfill.** A manifest is a CSV with columns `batch_id, source_path, target_path, reference_path`; relative
-paths resolve against the manifest's own directory. For example, save this as `data/manifest.csv`:
+paths resolve against the manifest's own directory. For example, save this as `out/manifest.csv` (`out/` is
+gitignored, so the example leaves no untracked file behind):
 
 ```csv
 batch_id,source_path,target_path,reference_path
-2026-11-14,sample/source.csv,sample/target.csv,sample/customers.csv
+2026-11-14,../data/sample/source.csv,../data/sample/target.csv,../data/sample/customers.csv
 ```
 
 ```powershell
-python -m recon backfill --manifest data/manifest.csv --config config/orders_recon.json
+python -m recon backfill --manifest out/manifest.csv --config config/orders_recon.json
 ```
+
+After the quickstart this line prints `SKIPPED` with the quickstart's run_id: the inputs and config are the
+same, so the run_key already SUCCEEDED in `out/recon.db`. Add `--db out/backfill.db --out out/backfill` to see
+it execute as a new run.
 
 The whole manifest is validated before anything runs. Each line is an independent run with all the rules
 above; a failing line does not stop the others. A summary table (`batch_id, run_id, status, recon_status,
@@ -211,7 +226,8 @@ no locking beyond the stale rule, no schema migrations, 64-bit money sums, Windo
   reference list (customers) for one field.
 - **Validation loads a whole side into memory.** A side's raw records, validated rows and dedupe groups are
   held in Python at once; peak memory grows with the input (27.0 MiB at 10k, 268.0 MiB at 100k orders,
-  [docs/PERFORMANCE.md](docs/PERFORMANCE.md)).
+  [docs/PERFORMANCE.md](docs/PERFORMANCE.md)). These are tracemalloc figures: Python allocations only, not
+  SQLite's own memory, so the process footprint is higher.
 
 ## Next steps
 

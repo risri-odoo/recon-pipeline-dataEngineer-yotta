@@ -54,3 +54,9 @@ How I worked: Claude Code wrote the code one step at a time. A separate Claude c
 - Injected a crash after Silver (RECON_FAIL_AT=after_silver), queried the DB and saw zero rows for the failed run in every tier. The retry ran as attempt 2 and succeeded, and a third run was SKIPPED.
 - Read summary.md and spot-checked three rows of mismatches.csv against the rules (amount mismatch, TARGET_STALE, NULL_MISMATCH).
 - Measured my own 100k baseline with Measure-Command (24.2 s) before the performance step, so the optimization was judged against numbers from my machine.
+
+## Final review (Step 12)
+
+32. A fresh-session review found that a newer row with an unparseable updated_at let the older row pass as the truth (false PASS) → I made such rows shadow the key like a rejected newest version → because we can't prove which version is newest, so comparing either one is a guess.
+33. The review found the config loader accepted schemas the storage can't hold, crashing the run → I made config validation reject them up front → because a config error should fail fast with a clear message, not mid-run.
+34. The review found the CLI printed exit_code=1 while the process exited 2 → I fixed the output → because operators and schedulers read that line.

@@ -35,7 +35,7 @@ transactions, separately from the data transaction, so FAILED/REJECTED/ABANDONED
 | config_json | TEXT | yes | | the canonical config JSON that config_sha256 hashes; used by `recon report` | config file + defaults |
 | started_at | TEXT | no | | when the attempt started (non-deterministic) | clock |
 | finished_at | TEXT | yes | | when it ended (non-deterministic) | clock |
-| failure_reason | TEXT | yes | | REJECTED: first batch-reject code. FAILED: `INVARIANT_VIOLATION:<check>`, `INPUT_CHANGED`, `AGGREGATE_OVERFLOW` or `UNEXPECTED_ERROR`. ABANDONED: `STALE_RUNNING` | pipeline |
+| failure_reason | TEXT | yes | | REJECTED: first batch-reject code. FAILED: `INVARIANT_VIOLATION:<check>`, `INPUT_CHANGED`, `AGGREGATE_OVERFLOW`, `INTERRUPTED` (Ctrl-C / SystemExit) or `UNEXPECTED_ERROR`. ABANDONED: `STALE_RUNNING` | pipeline |
 | failure_detail | TEXT | yes | | REJECTED: all batch rejects as JSON `[{side, file, code, detail}]`. FAILED: invariant counts, `{side, file, expected_sha256, actual_sha256}`, `{error, step}`, or exception type and message | pipeline |
 
 ### raw_record
@@ -141,7 +141,7 @@ One row per differing compared field of a key that is clean on both sides.
 | group_value | TEXT | no | PK | `*` for ALL; the group's value; `NULL` (string) for a NULL group | clean_record |
 | source_value, target_value | INTEGER | no | | row count or sum in minor units; NULL discounts ignored; empty group = 0 | SQL COUNT / SUM over clean_record per side |
 | delta | INTEGER | no | | source_value − target_value | |
-| explained_delta | INTEGER | no | | the delta rebuilt bottom-up by walking key_result, independently of the SUMs | key_result + clean_record (DESIGN 4.6) |
+| explained_delta | INTEGER | no | | the delta rebuilt bottom-up by walking key_result: a separate query path from the SUMs but over the same clean rows, so it catches aggregation-logic bugs, not missing rows (KEY_COVERAGE covers those) | key_result + clean_record (DESIGN 4.6) |
 | unexplained_delta | INTEGER | no | | delta − explained_delta; must be 0 (AGGREGATE_EXPLAINED) | |
 
 ### check_result

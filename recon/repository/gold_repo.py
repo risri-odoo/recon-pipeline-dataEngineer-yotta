@@ -238,7 +238,8 @@ def aggregates_sql(measures: Sequence[Measure], groupings: Sequence[Grouping]) -
     - `rows`: the clean rows with every grouping value g<i> and raw measure value m<j> (source/target SUMs).
       SQLite inlines it, so clean_record is read once per grouping (an index range scan);
     - `walk`: key_result joined to its clean rows, contributions w<j> = +source / -target, NULL as 0
-      (explained_delta, rebuilt from key_result independently of the SUMs, DESIGN 4.6). It is referenced
+      (explained_delta: a separate query path from the SUMs but over the same clean rows, so it catches
+      aggregation-logic bugs, not missing rows; KEY_COVERAGE covers those, DESIGN 4.6/4.7). It is referenced
       once per grouping, so SQLite materializes it once: the expensive join runs a single time.
     Per grouping i: actual_<i> and explained_<i> group those, groups_<i> is the union of their group values
     (plus '*' for ALL); then one SELECT per (grouping, measure), joined by UNION ALL.

@@ -394,6 +394,18 @@ def test_crash_on_first_write_leaves_no_partial_report(inputs, tmp_path, monkeyp
     assert code == 0 and (out / fields["run_id"] / SUMMARY_MD).is_file()
 
 
+def test_stdout_shows_the_real_exit_code_and_no_report_path_when_publishing_fails(inputs, tmp_path, monkeypatch,
+                                                                                    capsys):
+    def boom(*_args):
+        raise OSError("disk full")
+    monkeypatch.setattr("recon.presentation.cli.write_report", boom)
+    code, fields, _ = run_cli(run_args(inputs, tmp_path / "out"), capsys)
+
+    assert (code, fields["status"], fields["recon_status"]) == (2, "SUCCEEDED", "FAIL")
+    assert fields["exit_code"] == "2"  # the process exit code, not the run's recon exit code 1
+    assert "report" not in fields
+
+
 def test_recover_run_dir_finishes_an_interrupted_swap(tmp_path):
     run_dir = tmp_path / "r-a1"
     backup, staging = tmp_path / ".r-a1.old", tmp_path / ".r-a1.staging"

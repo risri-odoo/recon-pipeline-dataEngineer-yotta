@@ -467,6 +467,69 @@ def test_aggregate_overflow_fails_the_run(request_, monkeypatch, step):
     assert counts(request_, failed.run_id) == {t: (1 if t == "run" else 0) for t in TABLES}
 
 
+def test_newer_row_with_unparseable_updated_at_shadows_the_key_instead_of_a_false_pass(request_):
+    # Final-review repro: the older valid source row used to win and MATCH the target (recon PASS).
+    _write_inputs(request_, source=[order_row("O1", updated_at="2026-01-01T00:00:00Z"),
+                                    order_row("O1", status="CANCELLED", amount="99.00", updated_at="garbage")],
+                  target=[order_row("O1", updated_at="2026-01-01T00:00:00Z")])
+
+    outcome = run_pipeline(request_)
+
+    assert (outcome.status, outcome.recon_status, outcome.exit_code) == ("SUCCEEDED", "FAIL", 1)
+    conn = db(request_)
+    try:
+        [key] = gold_repo.fetch_key_results(conn, outcome.run_id)
+        q = {r["line_no"]: r for r in silver_repo.fetch_quarantine(conn, outcome.run_id, "SOURCE")}
+        clean_source = silver_repo.count_clean_records(conn, outcome.run_id, "SOURCE")
+    finally:
+        conn.close()
+    assert (key["key_status"], key["source_line_no"], key["target_line_no"]) == ("SOURCE_REJECTED", 3, 2)
+    assert clean_source == 0
+    assert (q[2]["reason_code"], q[2]["detail"]) == ("SUPERSEDED", "shadowed by rejected line 3 (unparseable updated_at)")
+    assert (q[3]["reason_code"], q[3]["field_name"], q[3]["updated_at"]) == ("BAD_TYPE", "updated_at", None)
+
+
+def test_both_order_sides_empty_is_pass_flagged_by_empty_batch(request_):
+    # DESIGN 4.8: a quiet day with nothing to reconcile is PASS; EMPTY_BATCH is the signal to alert on.
+    _write_inputs(request_, source=[], target=[])
+
+    outcome = run_pipeline(request_)
+
+    assert (outcome.status, outcome.recon_status, outcome.exit_code) == ("SUCCEEDED", "PASS", 0)
+    conn = db(request_)
+    try:
+        keys = gold_repo.fetch_key_results(conn, outcome.run_id)
+        checks = {c["check_name"]: c for c in gold_repo.fetch_check_results(conn, outcome.run_id)}
+    finally:
+        conn.close()
+    assert keys == []
+    assert (checks["EMPTY_BATCH"]["status"], checks["EMPTY_BATCH"]["actual"]) == ("WARN", "2")
+    assert json.loads(checks["EMPTY_BATCH"]["detail"]) == [{"columns": [], "side": "SOURCE"},
+                                                          {"columns": [], "side": "TARGET"}]
+
+
+def test_interrupt_marks_the_run_failed_then_reraises(request_, monkeypatch):
+    def interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(pipeline.compare, "reconcile", interrupt)  # inside the data transaction
+
+    with pytest.raises(KeyboardInterrupt):
+        run_pipeline(request_)
+
+    conn = db(request_)
+    try:
+        [row] = [dict(r) for r in conn.execute("SELECT * FROM run")]
+    finally:
+        conn.close()
+    assert (row["status"], row["exit_code"], row["failure_reason"]) == ("FAILED", 2, "INTERRUPTED")
+    assert row["failure_detail"] == "KeyboardInterrupt" and row["finished_at"]
+    assert counts(request_, row["run_id"]) == {t: (1 if t == "run" else 0) for t in TABLES}
+
+    monkeypatch.undo()
+    retry = run_pipeline(request_)  # no stale wait: the interrupted attempt is not RUNNING
+    assert (retry.status, retry.attempt) == ("SUCCEEDED", 2)
+
+
 def test_header_only_reference_rejects_every_order(request_):
     _write_inputs(request_, source=[order_row("O1")], target=[order_row("O1")], reference=())
 

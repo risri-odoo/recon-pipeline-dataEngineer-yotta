@@ -38,10 +38,17 @@ def test_older_reject_and_valid_row_valid_wins(run_silver):
     assert result.sides["SOURCE"].counts.accepted == 1
 
 
-def test_reject_with_unparsed_version_cannot_win(run_silver):
-    conn, _ = run_silver(source=[order_row(amount="abc", updated_at="later"), order_row(updated_at=T1)])
-    assert [r["line_no"] for r in clean(conn)] == [3]
-    assert dispositions(conn) == {2: ("ROW_REJECT", "BAD_TYPE")}
+def test_reject_with_unparsed_version_shadows_the_key(run_silver):
+    # Its version is unknown, so the valid row cannot be proven newest: no fallback, whatever the line order.
+    conn, result = run_silver(source=[order_row(amount="abc", updated_at="later"), order_row(updated_at=T1),
+                                      order_row(updated_at=T3), order_row(status="BAD", updated_at="never")])
+    assert clean(conn) == []
+    assert dispositions(conn) == {2: ("ROW_REJECT", "BAD_TYPE"), 3: ("DUPLICATE", "SUPERSEDED"),
+                                  4: ("DUPLICATE", "SUPERSEDED"), 5: ("ROW_REJECT", "BAD_ENUM")}
+    q = q_by_line(conn)
+    assert q[3]["detail"] == q[4]["detail"] == "shadowed by rejected line 2 (unparseable updated_at)"
+    assert (q[2]["order_id"], q[2]["updated_at"]) == ("O1", None)
+    assert result.sides["SOURCE"].counts.superseded == 2 and result.sides["SOURCE"].counts.accepted == 0
 
 
 @pytest.mark.parametrize("reject_version", [T3, T2], ids=["newer", "tie"])
